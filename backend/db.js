@@ -29,6 +29,24 @@ const db = new sqlite3.Database(dbPath, (err) => {
             // Error mapped if column already exists
         });
 
+        // Create Users Table
+        db.run(`CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )`, (err) => {
+            if (!err) {
+                // Seed admin user if empty
+                db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
+                    if (row && row.count === 0) {
+                        const bcrypt = require('bcryptjs');
+                        const hash = bcrypt.hashSync('admin123', 10);
+                        db.run('INSERT INTO users (username, password) VALUES (?,?)', ['admin', hash]);
+                    }
+                });
+            }
+        });
+
         // Create Rooms Table
         db.run(`CREATE TABLE IF NOT EXISTS rooms (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
