@@ -1,25 +1,49 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { useContext } from 'react';
+import { AuthProvider, AuthContext } from './context/AuthContext';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Bookings from './pages/Bookings';
 import AddBooking from './pages/AddBooking';
 import EditBooking from './pages/EditBooking';
+import Login from './pages/Login';
+
+const ProtectedRoute = ({ children }) => {
+  const { isAuthenticated } = useContext(AuthContext);
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  return (
+    <div className="app-layout">
+      <Sidebar />
+      <main className="main-content">
+        {children}
+      </main>
+    </div>
+  );
+};
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+
+      <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/bookings" element={<ProtectedRoute><Bookings /></ProtectedRoute>} />
+      <Route path="/add" element={<ProtectedRoute><AddBooking /></ProtectedRoute>} />
+      <Route path="/edit/:id" element={<ProtectedRoute><EditBooking /></ProtectedRoute>} />
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
 
 function App() {
   return (
-    <Router>
-      <div className="app-layout">
-        <Sidebar />
-        <main className="main-content">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/bookings" element={<Bookings />} />
-            <Route path="/add" element={<AddBooking />} />
-            <Route path="/edit/:id" element={<EditBooking />} />
-          </Routes>
-        </main>
-      </div>
-    </Router>
+    <AuthProvider>
+      <Router>
+        <AppRoutes />
+      </Router>
+    </AuthProvider>
   );
 }
 

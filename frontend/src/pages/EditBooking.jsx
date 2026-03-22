@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format } from 'date-fns';
 import { Plus, X } from 'lucide-react';
+import { fetchWithAuth } from '../utils/api';
 
 export default function EditBooking() {
     const { id } = useParams();
@@ -15,7 +16,7 @@ export default function EditBooking() {
     const [advancedPayments, setAdvancedPayments] = useState([]);
 
     useEffect(() => {
-        fetch(`http://localhost:3001/api/reservations/${id}`)
+        fetchWithAuth(`http://localhost:3001/api/reservations/${id}`)
             .then(res => res.json())
             .then(data => {
                 if (data.data) {
@@ -91,7 +92,7 @@ export default function EditBooking() {
             advancedPayments: JSON.stringify(advancedPayments)
         };
 
-        fetch(`http://localhost:3001/api/reservations/${id}`, {
+        fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { addDays, format, parseISO, startOfDay } from 'date-fns';
 import { Link } from 'react-router-dom';
 import { Maximize, Minimize } from 'lucide-react';
+import { fetchWithAuth } from '../utils/api';
 
 export default function Dashboard() {
     const [rooms, setRooms] = useState([]);
@@ -17,8 +18,8 @@ export default function Dashboard() {
 
     useEffect(() => {
         Promise.all([
-            fetch('http://localhost:3001/api/rooms').then(res => res.json()),
-            fetch('http://localhost:3001/api/reservations').then(res => res.json())
+            fetchWithAuth('http://localhost:3001/api/rooms').then(res => res.json()),
+            fetchWithAuth('http://localhost:3001/api/reservations').then(res => res.json())
         ]).then(([roomsData, resData]) => {
             const sortedRooms = (roomsData.data || []).sort((a, b) => {
                 if (a.name === 'Family Studio') return 1;

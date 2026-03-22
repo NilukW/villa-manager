@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format } from 'date-fns';
 import { Plus, X } from 'lucide-react';
+import { fetchWithAuth } from '../utils/api';
 
 export default function AddBooking() {
     const navigate = useNavigate();
@@ -53,11 +54,11 @@ export default function AddBooking() {
         e.preventDefault();
         const payload = {
             ...formData,
-            advancedAmount: totalPaid, // Keep for backward compatibility 
+            advancedAmount: totalPaid, // Keep for backward compatibility
             advancedPayments: JSON.stringify(advancedPayments)
         };
 
-        fetch('http://localhost:3001/api/reservations', {
+        fetchWithAuth('http://localhost:3001/api/reservations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)

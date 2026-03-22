@@ -5,7 +5,7 @@ echo "Starting Deployment Setup for VillaManager..."
 
 # 1. Update system & install Node.js and dependencies
 sudo apt update
-sudo apt install -y curl nginx sqlite3 git apache2-utils
+sudo apt install -y curl nginx sqlite3 git
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
@@ -27,12 +27,7 @@ cd frontend
 npm install
 npm run build
 
-# 5. Access Control (Password Protection)
-echo "Setting up secure access..."
-# IMPORTANT: You can change 'admin' and 'Villa2026' to your preferred Username and Password
-sudo htpasswd -cb /etc/nginx/.htpasswd admin Villa2026
-
-# 6. Configure Nginx
+# 5. Configure Nginx
 echo "Configuring Nginx Reverse Proxy..."
 sudo rm -f /etc/nginx/sites-enabled/default
 
@@ -40,10 +35,6 @@ cat << 'EOF' | sudo tee /etc/nginx/sites-available/villamanager
 server {
     listen 80;
     server_name _; 
-
-    # Require Password to access the site
-    auth_basic "Restricted VillaManager Dashboard";
-    auth_basic_user_file /etc/nginx/.htpasswd;
 
     root /home/YOUR_USERNAME/villa-manager/frontend/dist;
     index index.html;
@@ -70,8 +61,7 @@ sudo ln -s /etc/nginx/sites-available/villamanager /etc/nginx/sites-enabled/
 sudo systemctl restart nginx
 
 echo "====================================================="
-echo "Deployment Complete! Your secure site is now running."
-echo "Username: admin"
-echo "Password: Villa2026"
-echo "You can access it using your VM's External IP Address"
+echo "Deployment Complete! Your application is now running."
+echo "You can access it using your VM's External IP Address."
+echo "Default built-in Login is admin / admin123"
 echo "====================================================="

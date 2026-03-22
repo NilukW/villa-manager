@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { fetchWithAuth } from '../utils/api';
 
 export default function Bookings() {
     const [bookings, setBookings] = useState([]);
@@ -12,7 +13,7 @@ export default function Bookings() {
     const [sortConfig, setSortConfig] = useState({ key: 'checkInDate', direction: 'asc' });
 
     const fetchBookings = () => {
-        fetch('http://localhost:3001/api/reservations')
+        fetchWithAuth('http://localhost:3001/api/reservations')
             .then(res => res.json())
             .then(data => {
                 setBookings(data.data || []);
@@ -25,7 +26,7 @@ export default function Bookings() {
 
     const handleDelete = (id) => {
         if (window.confirm("Are you sure you want to delete this booking?")) {
-            fetch(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' })
+            fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' })
                 .then(() => fetchBookings());
         }
     };
