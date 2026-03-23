@@ -68,21 +68,27 @@ app.post('/api/reservations', (req, res) => {
         roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
     } = req.body;
 
-    const sql = `INSERT INTO reservations (
-        guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const checkSql = `SELECT id FROM reservations WHERE roomName = ? AND checkInDate < ? AND checkOutDate > ?`;
+    db.get(checkSql, [roomName, checkOutDate, checkInDate], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (row) return res.status(400).json({ error: `The room '${roomName}' is already booked during these dates!` });
 
-    const params = [
-        guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource || 'Manual'
-    ];
+        const sql = `INSERT INTO reservations (
+            guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    db.run(sql, params, function (err) {
-        if (err) return res.status(400).json({ error: err.message });
-        res.json({
-            message: "Reservation created successfully",
-            data: { id: this.lastID, ...req.body }
+        const params = [
+            guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource || 'Manual'
+        ];
+
+        db.run(sql, params, function (err) {
+            if (err) return res.status(400).json({ error: err.message });
+            res.json({
+                message: "Reservation created successfully",
+                data: { id: this.lastID, ...req.body }
+            });
         });
     });
 });
@@ -103,19 +109,25 @@ app.put('/api/reservations/:id', (req, res) => {
         roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
     } = req.body;
 
-    const sql = `UPDATE reservations SET 
-        guestName = ?, phoneNo = ?, nicOrPassport = ?, checkInDate = ?, checkOutDate = ?,
-        roomName = ?, unitPrice = ?, totalAmount = ?, advancedAmount = ?, advancedPayments = ?, remarks = ?, bookingSource = ?
-        WHERE id = ?`;
+    const checkSql = `SELECT id FROM reservations WHERE roomName = ? AND checkInDate < ? AND checkOutDate > ? AND id != ?`;
+    db.get(checkSql, [roomName, checkOutDate, checkInDate, req.params.id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (row) return res.status(400).json({ error: `The room '${roomName}' is already booked by another guest during these dates!` });
 
-    const params = [
-        guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, req.params.id
-    ];
+        const sql = `UPDATE reservations SET 
+            guestName = ?, phoneNo = ?, nicOrPassport = ?, checkInDate = ?, checkOutDate = ?,
+            roomName = ?, unitPrice = ?, totalAmount = ?, advancedAmount = ?, advancedPayments = ?, remarks = ?, bookingSource = ?
+            WHERE id = ?`;
 
-    db.run(sql, params, function (err) {
-        if (err) return res.status(400).json({ error: err.message });
-        res.json({ message: "Reservation updated successfully", changes: this.changes });
+        const params = [
+            guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, req.params.id
+        ];
+
+        db.run(sql, params, function (err) {
+            if (err) return res.status(400).json({ error: err.message });
+            res.json({ message: "Reservation updated successfully", changes: this.changes });
+        });
     });
 });
 
