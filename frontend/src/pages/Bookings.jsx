@@ -24,10 +24,19 @@ export default function Bookings() {
 
     useEffect(() => { fetchBookings(); }, []);
 
-    const handleDelete = (id) => {
+    const handleDelete = async (id) => {
         if (window.confirm("Are you sure you want to delete this booking?")) {
-            fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' })
-                .then(() => fetchBookings());
+            try {
+                const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' });
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.error || 'Failed to delete booking from database');
+                }
+                fetchBookings();
+            } catch (err) {
+                alert("Error deleting booking: " + err.message);
+                console.error(err);
+            }
         }
     };
 
