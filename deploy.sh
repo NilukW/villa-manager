@@ -54,6 +54,9 @@ server {
 }
 EOF
 
+# Grant Nginx permissions to traverse the user's home directory
+chmod 755 /home/$(whoami)
+
 # Update the Nginx config with the actual Linux username
 sudo sed -i "s|YOUR_USERNAME|$(whoami)|g" /etc/nginx/sites-available/villamanager
 
