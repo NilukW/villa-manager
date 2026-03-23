@@ -11,6 +11,7 @@ export default function Bookings() {
     });
 
     const [sortConfig, setSortConfig] = useState({ key: 'checkInDate', direction: 'asc' });
+    const [deletingId, setDeletingId] = useState(null);
 
     const fetchBookings = () => {
         fetchWithAuth('http://localhost:3001/api/reservations')
@@ -24,25 +25,18 @@ export default function Bookings() {
 
     useEffect(() => { fetchBookings(); }, []);
 
-    const handleDelete = async (id) => {
-        alert("Delete button was successfully clicked! Checking ID: " + id);
-        const confirmed = window.confirm("Are you sure you want to delete this booking?");
-        if (confirmed) {
-            alert("Deletion Confirmed. Firing API request...");
-            try {
-                const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' });
-                if (!res.ok) {
-                    const data = await res.json();
-                    throw new Error(data.error || 'Failed to delete booking from database');
-                }
-                alert("API successfully returned OK! Re-fetching data...");
-                fetchBookings();
-            } catch (err) {
-                alert("Error inside try/catch: " + err.message);
-                console.error(err);
+    const executeDelete = async (id) => {
+        try {
+            const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || 'Failed to delete booking from database');
             }
-        } else {
-            alert("Deletion was cancelled by user.");
+            setDeletingId(null);
+            fetchBookings();
+        } catch (err) {
+            alert("Error deleting booking: " + err.message);
+            console.error(err);
         }
     };
 
@@ -119,6 +113,19 @@ export default function Bookings() {
 
     return (
         <div className="animate-slide-up">
+            {deletingId && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', fontWeight: 600, border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center', maxWidth: '400px' }}>
+                        <div style={{ fontSize: '3.5rem', lineHeight: 1, marginBottom: '0.5rem' }}>🗑️</div>
+                        <span style={{ fontSize: '1.25rem', color: 'var(--text-dark)' }}>Delete this booking?</span>
+                        <p style={{ fontSize: '0.9rem', color: 'var(--text-light)', margin: 0, fontWeight: 'normal' }}>This action cannot be undone and will permanently remove the record from your database.</p>
+                        <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', width: '100%' }}>
+                            <button type="button" onClick={() => setDeletingId(null)} className="btn" style={{ flex: 1, padding: '0.75rem', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: '0.5rem', cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
+                            <button type="button" onClick={() => executeDelete(deletingId)} className="btn" style={{ flex: 1, padding: '0.75rem', backgroundColor: 'var(--danger)', border: 'none', color: 'white', borderRadius: '0.5rem', cursor: 'pointer', fontWeight: 'bold' }}>Yes, Delete</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="page-header">
                 <h1 className="page-title">All Bookings</h1>
                 <button className="btn btn-primary" onClick={downloadCSV}>⭳ Export CSV</button>
@@ -223,7 +230,7 @@ export default function Bookings() {
                                         <td style={{ padding: '0.75rem' }}>
                                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                                                 <Link to={`/edit/${book.id}`} className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#eef2ff', color: 'var(--primary)', textDecoration: 'none', fontWeight: 500, border: '1px solid #c7d2fe' }}>Edit</Link>
-                                                <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 500 }} onClick={() => handleDelete(book.id)}>Delete</button>
+                                                <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 500 }} onClick={() => setDeletingId(book.id)}>Delete</button>
                                             </div>
                                         </td>
                                     </tr>
