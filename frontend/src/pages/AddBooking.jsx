@@ -86,8 +86,9 @@ export default function AddBooking() {
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
                 {submitError && (
-                    <div className="animate-slide-up" style={{ padding: '1rem', backgroundColor: '#fee2e2', color: '#b91c1c', borderRadius: '0.5rem', marginBottom: '1.5rem', fontWeight: 500, border: '1px solid #f87171' }}>
-                        ⚠️ {submitError}
+                    <div className="animate-slide-up" style={{ position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 9999, padding: '1rem 2rem', backgroundColor: '#fee2e2', color: '#b91c1c', borderRadius: '0.5rem', fontWeight: 600, border: '1px solid #f87171', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <span>⚠️ {submitError}</span>
+                        <button type="button" onClick={() => setSubmitError('')} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontWeight: 'bold', padding: '0 0.5rem' }}>✕</button>
                     </div>
                 )}
                 <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
