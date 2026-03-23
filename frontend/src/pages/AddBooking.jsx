@@ -86,10 +86,12 @@ export default function AddBooking() {
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
                 {submitError && (
-                    <div className="animate-slide-up" style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9999, padding: '2rem 3rem', backgroundColor: 'white', color: '#b91c1c', borderRadius: '0.75rem', fontWeight: 600, border: '2px solid #ef4444', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 9999px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center' }}>
-                        <div style={{ fontSize: '3rem', lineHeight: 1 }}>⚠️</div>
-                        <span style={{ fontSize: '1.25rem' }}>{submitError}</span>
-                        <button type="button" onClick={() => setSubmitError('')} style={{ marginTop: '0.5rem', background: '#fee2e2', border: 'none', color: '#b91c1c', cursor: 'pointer', fontWeight: 'bold', padding: '0.5rem 2.5rem', borderRadius: '0.5rem', fontSize: '1.05rem' }}>Dismiss</button>
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                        <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', color: '#b91c1c', borderRadius: '0.75rem', fontWeight: 600, border: '2px solid #ef4444', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center' }}>
+                            <div style={{ fontSize: '3rem', lineHeight: 1 }}>⚠️</div>
+                            <span style={{ fontSize: '1.25rem' }}>{submitError}</span>
+                            <button type="button" onClick={() => setSubmitError('')} style={{ marginTop: '0.5rem', background: '#fee2e2', border: 'none', color: '#b91c1c', cursor: 'pointer', fontWeight: 'bold', padding: '0.5rem 2.5rem', borderRadius: '0.5rem', fontSize: '1.05rem' }}>Dismiss</button>
+                        </div>
                     </div>
                 )}
                 <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
