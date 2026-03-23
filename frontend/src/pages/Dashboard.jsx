@@ -178,9 +178,9 @@ export default function Dashboard() {
                                                                 title={`${res.guestName} - Click to Edit`}
                                                                 onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'}
                                                                 onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}>
-                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem' }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.2rem' }}>
                                                                     {res.bookingSource === 'Booking.com' && (
-                                                                        <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.6rem', padding: '0.1rem 0.3rem', borderRadius: '2px', fontWeight: 'bold' }} title="Booking.com generated">B.com</span>
+                                                                        <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.55rem', padding: '0.1rem 0.2rem', borderRadius: '2px', fontWeight: 'bold' }} title="Booking.com generated">B</span>
                                                                     )}
                                                                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{res.guestName.split(' ')[0]}</span>
                                                                 </div>
