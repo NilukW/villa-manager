@@ -10,7 +10,7 @@ export default function Users() {
     const [error, setError] = useState('');
 
     const loadUsers = () => {
-        fetchWithAuth('http://localhost:3001/api/users')
+        fetchWithAuth('/api/users')
             .then(res => res.json())
             .then(data => { setUsers(data.data || []); setLoading(false); })
             .catch(err => { console.error(err); setLoading(false); });
@@ -22,7 +22,7 @@ export default function Users() {
         e.preventDefault();
         setError('');
         try {
-            const res = await fetchWithAuth('http://localhost:3001/api/users', {
+            const res = await fetchWithAuth('/api/users', {
                 method: 'POST',
                 body: JSON.stringify({ username: newUsername, password: newPassword })
             });
@@ -41,7 +41,7 @@ export default function Users() {
         const newPass = window.prompt(`Enter new password for ${username}:`);
         if (!newPass) return;
         try {
-            const res = await fetchWithAuth(`http://localhost:3001/api/users/${id}/password`, {
+            const res = await fetchWithAuth(`/api/users/${id}/password`, {
                 method: 'PUT',
                 body: JSON.stringify({ password: newPass })
             });
@@ -56,7 +56,7 @@ export default function Users() {
     const handleDelete = async (id) => {
         if (!window.confirm("Are you sure you want to delete this user?")) return;
         try {
-            const res = await fetchWithAuth(`http://localhost:3001/api/users/${id}`, { method: 'DELETE' });
+            const res = await fetchWithAuth(`/api/users/${id}`, { method: 'DELETE' });
             if (res.ok) loadUsers();
             else {
                 const data = await res.json();

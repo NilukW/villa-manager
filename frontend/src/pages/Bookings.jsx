@@ -14,7 +14,7 @@ export default function Bookings() {
     const [deletingId, setDeletingId] = useState(null);
 
     const fetchBookings = () => {
-        fetchWithAuth('http://localhost:3001/api/reservations')
+        fetchWithAuth('/api/reservations')
             .then(res => res.json())
             .then(data => {
                 setBookings(data.data || []);
@@ -27,7 +27,7 @@ export default function Bookings() {
 
     const executeDelete = async (id) => {
         try {
-            const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' });
+            const res = await fetchWithAuth(`/api/reservations/${id}`, { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json();
                 throw new Error(data.error || 'Failed to delete booking from database');

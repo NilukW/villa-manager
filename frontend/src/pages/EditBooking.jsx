@@ -17,7 +17,7 @@ export default function EditBooking() {
     const [submitError, setSubmitError] = useState('');
 
     useEffect(() => {
-        fetchWithAuth(`http://localhost:3001/api/reservations/${id}`)
+        fetchWithAuth(`/api/reservations/${id}`)
             .then(res => res.json())
             .then(data => {
                 if (data.data) {
@@ -95,7 +95,7 @@ export default function EditBooking() {
         };
 
         try {
-            const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, {
+            const res = await fetchWithAuth(`/api/reservations/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

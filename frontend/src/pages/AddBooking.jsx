@@ -61,7 +61,7 @@ export default function AddBooking() {
         };
 
         try {
-            const res = await fetchWithAuth('http://localhost:3001/api/reservations', {
+            const res = await fetchWithAuth('/api/reservations', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)

@@ -18,8 +18,8 @@ export default function Dashboard() {
 
     useEffect(() => {
         Promise.all([
-            fetchWithAuth('http://localhost:3001/api/rooms').then(res => res.json()),
-            fetchWithAuth('http://localhost:3001/api/reservations').then(res => res.json())
+            fetchWithAuth('/api/rooms').then(res => res.json()),
+            fetchWithAuth('/api/reservations').then(res => res.json())
         ]).then(([roomsData, resData]) => {
             const sortedRooms = (roomsData.data || []).sort((a, b) => {
                 if (a.name === 'Family Studio') return 1;
