@@ -55,7 +55,7 @@ server {
 EOF
 
 # Update the Nginx config with the actual Linux username
-sed -i "s|YOUR_USERNAME|$(whoami)|g" /etc/nginx/sites-available/villamanager
+sudo sed -i "s|YOUR_USERNAME|$(whoami)|g" /etc/nginx/sites-available/villamanager
 
 sudo ln -s /etc/nginx/sites-available/villamanager /etc/nginx/sites-enabled/
 sudo systemctl restart nginx
