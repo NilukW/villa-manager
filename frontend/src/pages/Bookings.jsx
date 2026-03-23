@@ -169,7 +169,12 @@ export default function Bookings() {
                                 return (
                                     <tr key={book.id} style={{ borderBottom: '1px solid var(--border)' }}>
                                         <td style={{ padding: '0.75rem' }}>
-                                            <div style={{ fontWeight: 500 }}>{book.guestName}</div>
+                                            <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                {book.guestName}
+                                                {book.bookingSource === 'Booking.com' && (
+                                                    <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold' }}>Booking.com</span>
+                                                )}
+                                            </div>
                                             <div style={{ fontSize: '0.85rem', color: 'var(--text-light)' }}>{book.nicOrPassport}</div>
                                         </td>
                                         <td style={{ padding: '0.75rem', fontWeight: 500 }}>
