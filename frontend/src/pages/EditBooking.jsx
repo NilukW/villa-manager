@@ -122,9 +122,10 @@ export default function EditBooking() {
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
                 {submitError && (
-                    <div className="animate-slide-up" style={{ position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 9999, padding: '1rem 2rem', backgroundColor: '#fee2e2', color: '#b91c1c', borderRadius: '0.5rem', fontWeight: 600, border: '1px solid #f87171', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <span>⚠️ {submitError}</span>
-                        <button type="button" onClick={() => setSubmitError('')} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontWeight: 'bold', padding: '0 0.5rem' }}>✕</button>
+                    <div className="animate-slide-up" style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 9999, padding: '2rem 3rem', backgroundColor: 'white', color: '#b91c1c', borderRadius: '0.75rem', fontWeight: 600, border: '2px solid #ef4444', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 9999px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center' }}>
+                        <div style={{ fontSize: '3rem', lineHeight: 1 }}>⚠️</div>
+                        <span style={{ fontSize: '1.25rem' }}>{submitError}</span>
+                        <button type="button" onClick={() => setSubmitError('')} style={{ marginTop: '0.5rem', background: '#fee2e2', border: 'none', color: '#b91c1c', cursor: 'pointer', fontWeight: 'bold', padding: '0.5rem 2.5rem', borderRadius: '0.5rem', fontSize: '1.05rem' }}>Dismiss</button>
                     </div>
                 )}
                 <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
