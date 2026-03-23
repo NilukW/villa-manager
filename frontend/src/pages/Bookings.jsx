@@ -25,18 +25,24 @@ export default function Bookings() {
     useEffect(() => { fetchBookings(); }, []);
 
     const handleDelete = async (id) => {
-        if (window.confirm("Are you sure you want to delete this booking?")) {
+        alert("Delete button was successfully clicked! Checking ID: " + id);
+        const confirmed = window.confirm("Are you sure you want to delete this booking?");
+        if (confirmed) {
+            alert("Deletion Confirmed. Firing API request...");
             try {
                 const res = await fetchWithAuth(`http://localhost:3001/api/reservations/${id}`, { method: 'DELETE' });
                 if (!res.ok) {
                     const data = await res.json();
                     throw new Error(data.error || 'Failed to delete booking from database');
                 }
+                alert("API successfully returned OK! Re-fetching data...");
                 fetchBookings();
             } catch (err) {
-                alert("Error deleting booking: " + err.message);
+                alert("Error inside try/catch: " + err.message);
                 console.error(err);
             }
+        } else {
+            alert("Deletion was cancelled by user.");
         }
     };
 
