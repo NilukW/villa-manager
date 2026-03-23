@@ -13,6 +13,7 @@ export default function AddBooking() {
     });
 
     const [advancedPayments, setAdvancedPayments] = useState([]);
+    const [submitError, setSubmitError] = useState('');
 
     // Auto-calculate total amount
     useEffect(() => {
@@ -50,22 +51,31 @@ export default function AddBooking() {
     const totalPaid = advancedPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const pendingAmount = Number(formData.totalAmount || 0) - totalPaid;
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
+        setSubmitError('');
         const payload = {
             ...formData,
-            advancedAmount: totalPaid, // Keep for backward compatibility
+            advancedAmount: totalPaid,
             advancedPayments: JSON.stringify(advancedPayments)
         };
 
-        fetchWithAuth('http://localhost:3001/api/reservations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-            .then(res => res.json())
-            .then(() => navigate('/bookings'))
-            .catch(err => alert("Error saving booking: " + err.message));
+        try {
+            const res = await fetchWithAuth('http://localhost:3001/api/reservations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                setSubmitError(data.error || 'Failed to save booking');
+            } else {
+                navigate('/bookings');
+            }
+        } catch (err) {
+            setSubmitError(err.message);
+        }
     };
 
     return (
@@ -75,6 +85,11 @@ export default function AddBooking() {
             </div>
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
+                {submitError && (
+                    <div className="animate-slide-up" style={{ padding: '1rem', backgroundColor: '#fee2e2', color: '#b91c1c', borderRadius: '0.5rem', marginBottom: '1.5rem', fontWeight: 500, border: '1px solid #f87171' }}>
+                        ⚠️ {submitError}
+                    </div>
+                )}
                 <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                         <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Guest Information</h3>
