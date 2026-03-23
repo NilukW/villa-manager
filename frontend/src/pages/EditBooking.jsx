@@ -14,6 +14,7 @@ export default function EditBooking() {
         remarks: '', bookingSource: 'Manual'
     });
     const [advancedPayments, setAdvancedPayments] = useState([]);
+    const [submitError, setSubmitError] = useState('');
 
     useEffect(() => {
         fetchWithAuth(`http://localhost:3001/api/reservations/${id}`)
