@@ -7,13 +7,16 @@ export default function Bookings() {
     const [loading, setLoading] = useState(true);
 
     const [filters, setFilters] = useState({
-        guestInfo: '', checkInDate: '', checkOutDate: '', roomName: '', remarks: ''
+        guestInfo: '', checkInDate: '', checkOutDate: '', roomName: '', remarks: '', settlementStatus: ''
     });
 
     const [sortConfig, setSortConfig] = useState({ key: 'checkInDate', direction: 'asc' });
     const [deletingId, setDeletingId] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [itemsPerPage, setItemsPerPage] = useState(20);
+
+    const [settlingGroup, setSettlingGroup] = useState(null);
+    const [settleAmount, setSettleAmount] = useState('');
 
     const fetchBookings = () => {
         fetchWithAuth('/api/reservations')
@@ -42,6 +45,26 @@ export default function Bookings() {
         }
     };
 
+    const handleSettleSubmit = async (e) => {
+        e.preventDefault();
+        try {
+            const res = await fetchWithAuth(`/api/reservations/group/${settlingGroup.groupId}/settle`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amountReceived: settleAmount })
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || 'Failed to settle balance');
+            }
+            setSettlingGroup(null);
+            setSettleAmount('');
+            fetchBookings();
+        } catch (err) {
+            alert("Error settling balance: " + err.message);
+        }
+    };
+
     const handleFilterChange = (e) => {
         setFilters({ ...filters, [e.target.name]: e.target.value });
         setCurrentPage(1);
@@ -66,10 +89,25 @@ export default function Bookings() {
             groups[gid].roomNamesList.push(b.roomName);
         });
         
-        return Object.values(groups).map(g => ({
-            ...g,
-            roomName: g.roomNamesList.join(', ')
-        }));
+        return Object.values(groups).map(g => {
+            let paid = g.advancedAmount || 0;
+            try {
+                if (g.advancedPayments) {
+                    const parsed = JSON.parse(g.advancedPayments);
+                    if (parsed.length > 0) {
+                        paid = parsed.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+                    }
+                }
+            } catch (e) { }
+            const pending = Number(g.totalAmount || 0) - paid;
+
+            return {
+                ...g,
+                roomName: g.roomNamesList.join(', '),
+                paid,
+                pending
+            };
+        });
     }, [bookings]);
 
     const filteredBookings = groupedBookings.filter(book => {
@@ -78,6 +116,8 @@ export default function Bookings() {
         if (filters.checkOutDate && book.checkOutDate !== filters.checkOutDate) return false;
         if (filters.roomName && book.roomName !== filters.roomName) return false;
         if (filters.remarks && !(book.remarks || '').toLowerCase().includes(filters.remarks.toLowerCase())) return false;
+        if (filters.settlementStatus === 'Settled' && book.pending > 0.05) return false;
+        if (filters.settlementStatus === 'Unsettled' && book.pending <= 0.05) return false;
         return true;
     });
 
@@ -104,23 +144,15 @@ export default function Bookings() {
     }
 
     const downloadCSV = () => {
-        const listToExport = sortedBookings.length > 0 ? sortedBookings : bookings;
+        const listToExport = sortedBookings.length > 0 ? sortedBookings : groupedBookings;
         if (listToExport.length === 0) return;
 
         const headers = ["ID", "Guest Name", "Phone", "NIC", "Check-in", "Check-out", "Room Name", "Unit Price", "Total Amount", "Total Paid", "Pending Balance", "Source", "Remarks"];
         const csvRows = [headers.join(',')];
 
         listToExport.forEach(b => {
-            let paid = b.advancedAmount || 0;
-            try {
-                if (b.advancedPayments) {
-                    const parsed = JSON.parse(b.advancedPayments);
-                    if (parsed.length > 0) {
-                        paid = parsed.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-                    }
-                }
-            } catch (e) { }
-            const pending = Number(b.totalAmount || 0) - paid;
+            const paid = b.paid || 0;
+            const pending = b.pending || 0;
 
             const row = [
                 b.id, `"${b.guestName}"`, `"${b.phoneNo || ''}"`, `"${b.nicOrPassport}"`,
@@ -145,6 +177,42 @@ export default function Bookings() {
 
     return (
         <div className="animate-slide-up">
+            {settlingGroup && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', minWidth: '400px' }}>
+                        <h2 style={{ marginTop: 0, marginBottom: '1rem', color: 'var(--text-dark)' }}>Settle Balance</h2>
+                        <div style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                                <span style={{ color: 'var(--text-light)' }}>Guest:</span>
+                                <strong>{settlingGroup.guestName}</strong>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <span style={{ color: 'var(--text-light)' }}>Pending Balance:</span>
+                                <strong style={{ color: 'var(--danger)' }}>LKR {settlingGroup.pending.toLocaleString()}</strong>
+                            </div>
+                        </div>
+                        <form onSubmit={handleSettleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                            <div className="form-group" style={{ textAlign: 'left' }}>
+                                <label className="form-label">Amount Received (LKR)</label>
+                                <input 
+                                    type="number" 
+                                    step="any"
+                                    className="form-control" 
+                                    value={settleAmount} 
+                                    onChange={e => setSettleAmount(e.target.value)} 
+                                    required 
+                                    autoFocus
+                                />
+                            </div>
+                            <div style={{ display: 'flex', gap: '1rem' }}>
+                                <button type="button" onClick={() => setSettlingGroup(null)} className="btn" style={{ flex: 1, padding: '0.75rem', backgroundColor: 'var(--surface)', border: '1px solid var(--border)' }}>Cancel</button>
+                                <button type="submit" className="btn btn-primary" style={{ flex: 1, padding: '0.75rem' }}>Confirm Settle</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+            
             {deletingId && (
                 <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
                     <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', fontWeight: 600, border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center', maxWidth: '400px' }}>
@@ -197,7 +265,13 @@ export default function Bookings() {
                                         <option value="Family Studio">Family Studio</option>
                                     </select>
                                 </td>
-                                <td style={{ padding: '0.5rem' }}></td>
+                                <td style={{ padding: '0.5rem' }}>
+                                    <select name="settlementStatus" className="form-control" style={{ width: '100%', padding: '0.4rem', fontSize: '0.8rem' }} value={filters.settlementStatus} onChange={handleFilterChange}>
+                                        <option value="">All Payments</option>
+                                        <option value="Settled">Settled</option>
+                                        <option value="Unsettled">Unsettled</option>
+                                    </select>
+                                </td>
                                 <td style={{ padding: '0.5rem' }}>
                                     <input type="text" name="remarks" placeholder="Search Remarks..." className="form-control" style={{ width: '100%', padding: '0.4rem', fontSize: '0.8rem' }} value={filters.remarks} onChange={handleFilterChange} />
                                 </td>
@@ -209,19 +283,10 @@ export default function Bookings() {
                         <tbody>
                             {paginatedBookings.length === 0 && <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center' }}>No bookings found</td></tr>}
                             {paginatedBookings.map(book => {
-                                let paid = book.advancedAmount || 0;
-                                try {
-                                    if (book.advancedPayments) {
-                                        const parsed = JSON.parse(book.advancedPayments);
-                                        if (parsed.length > 0) {
-                                            paid = parsed.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-                                        }
-                                    }
-                                } catch (e) { }
-                                const pending = Number(book.totalAmount || 0) - paid;
+                                const { paid = 0, pending = 0 } = book;
 
                                 return (
-                                    <tr key={book.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                    <tr key={book.id} style={{ borderBottom: '1px solid var(--border)', backgroundColor: pending <= 0.05 ? '#f0fdf4' : 'transparent' }}>
                                         <td style={{ padding: '0.75rem' }}>
                                             <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                 {book.guestName}
@@ -259,8 +324,20 @@ export default function Bookings() {
                                             {book.remarks || '-'}
                                         </td>
                                         <td style={{ padding: '0.75rem' }}>
-                                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                                 <Link to={`/edit/${book.groupId || book.id}`} className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#eef2ff', color: 'var(--primary)', textDecoration: 'none', fontWeight: 500, border: '1px solid #c7d2fe' }}>Edit</Link>
+                                                {pending > 0 && (
+                                                    <button 
+                                                        className="btn" 
+                                                        style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef9c3', color: '#854d0e', border: '1px solid #fef08a', cursor: 'pointer', fontWeight: 500 }} 
+                                                        onClick={() => {
+                                                            setSettlingGroup({ ...book, pending, groupId: book.groupId || book.id });
+                                                            setSettleAmount(pending.toString());
+                                                        }}
+                                                    >
+                                                        ✓ Settle
+                                                    </button>
+                                                )}
                                                 <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 500 }} onClick={() => setDeletingId(book.groupId || book.id)}>Delete</button>
                                             </div>
                                         </td>

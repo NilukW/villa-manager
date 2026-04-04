@@ -246,6 +246,84 @@ app.delete('/api/reservations/:id', (req, res) => {
     });
 });
 
+// Settle group reservation balance
+app.post('/api/reservations/group/:groupId/settle', (req, res) => {
+    const { amountReceived } = req.body;
+    const groupId = req.params.groupId;
+
+    if (!amountReceived || isNaN(amountReceived)) {
+        return res.status(400).json({ error: "Invalid amount received" });
+    }
+
+    db.all("SELECT * FROM reservations WHERE groupId = ?", [groupId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: "Group not found" });
+
+        const firstRow = rows[0];
+        let payments = [];
+        try {
+            payments = firstRow.advancedPayments ? JSON.parse(firstRow.advancedPayments) : [];
+        } catch (e) {}
+
+        // Add the settlement payment
+        const numRooms = rows.length;
+        const totalAmountSettled = Number(amountReceived);
+        
+        // Push the main entry logic
+        payments.push({
+            date: new Date().toISOString().split('T')[0],
+            amount: totalAmountSettled.toString()
+        });
+
+        // The advancedAmount needs to be split across rows just like AddBooking does
+        const newTotalAdvanced = payments.reduce((sum, p) => sum + Number(p.amount), 0);
+        const splitAdvance = newTotalAdvanced / numRooms;
+        
+        // We must update the advancedPayments JSON string (but we split the visual amount per room logic)
+        // Wait, the advancedPayments stores the raw value inputted. 
+        // In AddBooking/EditBooking we sum the raw values.
+        
+        const splitPayments = payments.map(p => ({
+            ...p,
+            amount: (Number(p.amount) / numRooms).toString()
+        }));
+
+        const newPaymentsJson = JSON.stringify(splitPayments);
+
+        db.run("UPDATE reservations SET advancedAmount = ?, advancedPayments = ? WHERE groupId = ?", 
+            [splitAdvance, newPaymentsJson, groupId], function(updateErr) {
+            if (updateErr) return res.status(500).json({ error: updateErr.message });
+            res.json({ message: "Balance settled completely" });
+        });
+    });
+});
+
+// --- Expenses Management ---
+app.get('/api/expenses', (req, res) => {
+    db.all("SELECT * FROM expenses ORDER BY date DESC", [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ data: rows });
+    });
+});
+
+app.post('/api/expenses', (req, res) => {
+    const { date, category, amount, description } = req.body;
+    if (!date || !category || !amount) return res.status(400).json({ error: "Missing required fields" });
+    
+    db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, ?, ?, ?)", 
+        [date, category, amount, description || ''], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Expense added", data: { id: this.lastID, date, category, amount, description } });
+    });
+});
+
+app.delete('/api/expenses/:id', (req, res) => {
+    db.run("DELETE FROM expenses WHERE id = ?", [req.params.id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Expense deleted", changes: this.changes });
+    });
+});
+
 // --- User Management ---
 // Get all users
 app.get('/api/users', authenticateToken, (req, res) => {

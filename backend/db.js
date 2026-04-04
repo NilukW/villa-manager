@@ -74,6 +74,14 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 });
             }
         });
+        // Create Expenses Table
+        db.run(`CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount REAL NOT NULL,
+            description TEXT
+        )`);
     }
 });
 
