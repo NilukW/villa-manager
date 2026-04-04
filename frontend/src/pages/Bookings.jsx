@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchWithAuth } from '../utils/api';
 
@@ -12,6 +12,8 @@ export default function Bookings() {
 
     const [sortConfig, setSortConfig] = useState({ key: 'checkInDate', direction: 'asc' });
     const [deletingId, setDeletingId] = useState(null);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(20);
 
     const fetchBookings = () => {
         fetchWithAuth('/api/reservations')
@@ -27,7 +29,7 @@ export default function Bookings() {
 
     const executeDelete = async (id) => {
         try {
-            const res = await fetchWithAuth(`/api/reservations/${id}`, { method: 'DELETE' });
+            const res = await fetchWithAuth(`/api/reservations/group/${id}`, { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json();
                 throw new Error(data.error || 'Failed to delete booking from database');
@@ -42,15 +44,35 @@ export default function Bookings() {
 
     const handleFilterChange = (e) => {
         setFilters({ ...filters, [e.target.name]: e.target.value });
+        setCurrentPage(1);
     };
 
     const handleSort = (key) => {
         let direction = 'asc';
         if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
         setSortConfig({ key, direction });
+        setCurrentPage(1);
     };
 
-    const filteredBookings = bookings.filter(book => {
+    const groupedBookings = useMemo(() => {
+        const groups = {};
+        bookings.forEach(b => {
+            const gid = b.groupId || b.id; // Fallback for old data
+            if (!groups[gid]) {
+                groups[gid] = { ...b, groupId: gid, totalAmount: 0, advancedAmount: 0, roomNamesList: [] };
+            }
+            groups[gid].totalAmount += Number(b.totalAmount || 0);
+            groups[gid].advancedAmount += Number(b.advancedAmount || 0);
+            groups[gid].roomNamesList.push(b.roomName);
+        });
+        
+        return Object.values(groups).map(g => ({
+            ...g,
+            roomName: g.roomNamesList.join(', ')
+        }));
+    }, [bookings]);
+
+    const filteredBookings = groupedBookings.filter(book => {
         if (filters.guestInfo && !book.guestName.toLowerCase().includes(filters.guestInfo.toLowerCase()) && !(book.nicOrPassport || '').toLowerCase().includes(filters.guestInfo.toLowerCase())) return false;
         if (filters.checkInDate && book.checkInDate !== filters.checkInDate) return false;
         if (filters.checkOutDate && book.checkOutDate !== filters.checkOutDate) return false;
@@ -70,6 +92,16 @@ export default function Bookings() {
         if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
         return 0;
     });
+
+    const totalItems = sortedBookings.length;
+    const totalPages = itemsPerPage === 'All' ? 1 : Math.ceil(totalItems / itemsPerPage) || 1;
+    const safePage = Math.min(Math.max(1, currentPage), totalPages);
+    
+    let paginatedBookings = sortedBookings;
+    if (itemsPerPage !== 'All') {
+        const startIndex = (safePage - 1) * itemsPerPage;
+        paginatedBookings = sortedBookings.slice(startIndex, startIndex + itemsPerPage);
+    }
 
     const downloadCSV = () => {
         const listToExport = sortedBookings.length > 0 ? sortedBookings : bookings;
@@ -175,8 +207,8 @@ export default function Bookings() {
                             </tr>
                         </thead>
                         <tbody>
-                            {sortedBookings.length === 0 && <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center' }}>No bookings found</td></tr>}
-                            {sortedBookings.map(book => {
+                            {paginatedBookings.length === 0 && <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center' }}>No bookings found</td></tr>}
+                            {paginatedBookings.map(book => {
                                 let paid = book.advancedAmount || 0;
                                 try {
                                     if (book.advancedPayments) {
@@ -197,7 +229,6 @@ export default function Bookings() {
                                                     <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold' }}>Booking.com</span>
                                                 )}
                                             </div>
-                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-light)' }}>{book.nicOrPassport}</div>
                                         </td>
                                         <td style={{ padding: '0.75rem', fontWeight: 500 }}>
                                             {new Date(book.checkInDate).toLocaleDateString()}
@@ -229,8 +260,8 @@ export default function Bookings() {
                                         </td>
                                         <td style={{ padding: '0.75rem' }}>
                                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                                <Link to={`/edit/${book.id}`} className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#eef2ff', color: 'var(--primary)', textDecoration: 'none', fontWeight: 500, border: '1px solid #c7d2fe' }}>Edit</Link>
-                                                <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 500 }} onClick={() => setDeletingId(book.id)}>Delete</button>
+                                                <Link to={`/edit/${book.groupId || book.id}`} className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#eef2ff', color: 'var(--primary)', textDecoration: 'none', fontWeight: 500, border: '1px solid #c7d2fe' }}>Edit</Link>
+                                                <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 500 }} onClick={() => setDeletingId(book.groupId || book.id)}>Delete</button>
                                             </div>
                                         </td>
                                     </tr>
@@ -238,6 +269,52 @@ export default function Bookings() {
                             })}
                         </tbody>
                     </table>
+                )}
+                {!loading && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', padding: '0.5rem 0' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-light)' }}>
+                            <span>Items per page:</span>
+                            <select 
+                                className="form-control" 
+                                style={{ padding: '0.2rem', width: 'auto' }} 
+                                value={itemsPerPage} 
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    setItemsPerPage(val === 'All' ? 'All' : Number(val));
+                                    setCurrentPage(1);
+                                }}
+                            >
+                                <option value={20}>20</option>
+                                <option value={50}>50</option>
+                                <option value={100}>100</option>
+                                <option value="All">All</option>
+                            </select>
+                        </div>
+                        
+                        {itemsPerPage !== 'All' && totalPages > 1 && (
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                <button 
+                                    className="btn" 
+                                    style={{ padding: '0.3rem 0.6rem', border: '1px solid var(--border)', background: 'var(--surface)', cursor: safePage === 1 ? 'not-allowed' : 'pointer', opacity: safePage === 1 ? 0.5 : 1 }}
+                                    disabled={safePage === 1}
+                                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                >
+                                    Previous
+                                </button>
+                                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>
+                                    Page {safePage} of {totalPages}
+                                </span>
+                                <button 
+                                    className="btn" 
+                                    style={{ padding: '0.3rem 0.6rem', border: '1px solid var(--border)', background: 'var(--surface)', cursor: safePage === totalPages ? 'not-allowed' : 'pointer', opacity: safePage === totalPages ? 0.5 : 1 }}
+                                    disabled={safePage === totalPages}
+                                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 )}
             </div>
         </div>

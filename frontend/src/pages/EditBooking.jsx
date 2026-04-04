@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { differenceInDays, parseISO, startOfDay, format } from 'date-fns';
+import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
 import { Plus, X } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 
@@ -10,62 +10,153 @@ export default function EditBooking() {
     const [loading, setLoading] = useState(true);
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
-        roomName: 'Standard 1', unitPrice: '', totalAmount: '',
+        selectedRooms: [], unitPrice: '', totalAmount: '',
         remarks: '', bookingSource: 'Manual'
     });
+    const [lastEditedAmount, setLastEditedAmount] = useState('unitPrice');
     const [advancedPayments, setAdvancedPayments] = useState([]);
     const [submitError, setSubmitError] = useState('');
 
-    useEffect(() => {
-        fetchWithAuth(`/api/reservations/${id}`)
-            .then(res => res.json())
-            .then(data => {
-                if (data.data) {
-                    const sanitizedData = { ...data.data };
-                    Object.keys(sanitizedData).forEach(key => {
-                        if (sanitizedData[key] === null) {
-                            sanitizedData[key] = '';
-                        }
-                    });
-                    setFormData(sanitizedData);
+    const [allRooms, setAllRooms] = useState([]);
+    const [allReservations, setAllReservations] = useState([]);
+    const [availableRooms, setAvailableRooms] = useState([]);
 
-                    // Parse multiple payments
-                    try {
-                        const parsed = sanitizedData.advancedPayments ? JSON.parse(sanitizedData.advancedPayments) : [];
-                        // Handle legacy single-payment if advancedPayments is empty but advancedAmount exists
-                        if (parsed.length === 0 && sanitizedData.advancedAmount) {
-                            setAdvancedPayments([{ date: sanitizedData.checkInDate || format(new Date(), 'yyyy-MM-dd'), amount: sanitizedData.advancedAmount }]);
-                        } else {
-                            setAdvancedPayments(parsed);
-                        }
-                    } catch (e) {
-                        setAdvancedPayments([]);
+    useEffect(() => {
+        Promise.all([
+            fetchWithAuth(`/api/reservations/group/${id}`).then(res => res.json()),
+            fetchWithAuth('/api/rooms').then(res => res.json()),
+            fetchWithAuth('/api/reservations').then(res => res.json())
+        ]).then(([bookingData, roomsData, allResData]) => {
+            if (bookingData.data && bookingData.data.length > 0) {
+                const group = bookingData.data;
+                const firstRow = group[0];
+                const sanitizedData = { ...firstRow };
+                Object.keys(sanitizedData).forEach(key => {
+                    if (sanitizedData[key] === null) {
+                        sanitizedData[key] = '';
                     }
+                });
+                
+                const numRooms = group.length;
+                sanitizedData.selectedRooms = group.map(r => r.roomName);
+                
+                let sumTotal = group.reduce((sum, r) => sum + Number(r.totalAmount || 0), 0);
+                sanitizedData.totalAmount = sumTotal.toString();
+                sanitizedData.advancedAmount = group.reduce((sum, r) => sum + Number(r.advancedAmount || 0), 0);
+                
+                setFormData(sanitizedData);
+
+                try {
+                    const parsed = sanitizedData.advancedPayments ? JSON.parse(sanitizedData.advancedPayments) : [];
+                    if (parsed.length === 0 && sanitizedData.advancedAmount) {
+                        setAdvancedPayments([{ date: sanitizedData.checkInDate || format(new Date(), 'yyyy-MM-dd'), amount: sanitizedData.advancedAmount }]);
+                    } else {
+                        const scaledParsed = parsed.map(p => ({ ...p, amount: Number(p.amount || 0) * numRooms }));
+                        setAdvancedPayments(scaledParsed);
+                    }
+                } catch (e) {
+                    setAdvancedPayments([]);
                 }
-                setLoading(false);
-            }).catch(err => {
-                console.error(err);
-                setLoading(false);
+            }
+
+            const sortedRooms = (roomsData.data || []).sort((a, b) => {
+                if (a.name === 'Family Studio') return 1;
+                if (b.name === 'Family Studio') return -1;
+                return a.name.localeCompare(b.name);
             });
+            setAllRooms(sortedRooms);
+            setAvailableRooms(sortedRooms);
+            setAllReservations(allResData.data || []);
+            setLoading(false);
+        }).catch(err => {
+            console.error(err);
+            setLoading(false);
+        });
     }, [id]);
 
-    // Auto-calculate total amount
     useEffect(() => {
-        if (formData.checkInDate && formData.checkOutDate && formData.unitPrice && !loading) {
+        if (!formData.checkInDate || !formData.checkOutDate) {
+            setAvailableRooms(allRooms);
+            return;
+        }
+        const checkIn = startOfDay(parseISO(formData.checkInDate));
+        const checkOut = startOfDay(parseISO(formData.checkOutDate));
+
+        const available = allRooms.filter(room => {
+            const isBooked = allReservations.some(res => {
+                if ((res.groupId && String(res.groupId) === String(id)) || String(res.id) === String(id)) return false;
+                if (res.roomName !== room.name) return false;
+                const resIn = startOfDay(parseISO(res.checkInDate));
+                const resOut = startOfDay(parseISO(res.checkOutDate));
+                return resIn < checkOut && resOut > checkIn;
+            });
+            return !isBooked;
+        });
+
+        setAvailableRooms(available);
+
+        if (formData.selectedRooms && formData.selectedRooms.length > 0) {
+            const newSelected = formData.selectedRooms.filter(r => available.some(ar => ar.name === r));
+            if (newSelected.length !== formData.selectedRooms.length) {
+                setFormData(prev => ({ ...prev, selectedRooms: newSelected }));
+            }
+        }
+    }, [formData.checkInDate, formData.checkOutDate, allRooms, allReservations, id]);
+
+    // Auto-calculate total amount or unit price
+    useEffect(() => {
+        if (formData.checkInDate && formData.checkOutDate && !loading) {
             const checkIn = startOfDay(parseISO(formData.checkInDate));
             const checkOut = startOfDay(parseISO(formData.checkOutDate));
             const days = differenceInDays(checkOut, checkIn);
+            const numRooms = formData.selectedRooms && formData.selectedRooms.length > 0 ? formData.selectedRooms.length : 1;
+
             if (days > 0) {
-                const newTotal = (days * parseFloat(formData.unitPrice)).toString();
-                if (formData.totalAmount !== newTotal) {
-                    setFormData(prev => ({ ...prev, totalAmount: newTotal }));
+                if (lastEditedAmount === 'unitPrice' && formData.unitPrice !== '') {
+                    const expectedTotal = days * parseFloat(formData.unitPrice) * numRooms;
+                    if (formData.totalAmount === '' || Math.abs(parseFloat(formData.totalAmount) - expectedTotal) > 0.01) {
+                        setFormData(prev => ({ ...prev, totalAmount: parseFloat(expectedTotal.toFixed(2)).toString() }));
+                    }
+                } else if (lastEditedAmount === 'totalAmount' && formData.totalAmount !== '') {
+                    const expectedUnit = parseFloat(formData.totalAmount) / (days * numRooms);
+                    if (formData.unitPrice === '' || Math.abs(parseFloat(formData.unitPrice) - expectedUnit) > 0.01) {
+                        setFormData(prev => ({ ...prev, unitPrice: parseFloat(expectedUnit.toFixed(2)).toString() }));
+                    }
                 }
             }
         }
-    }, [formData.checkInDate, formData.checkOutDate, formData.unitPrice, loading]);
+    }, [formData.checkInDate, formData.checkOutDate, formData.unitPrice, formData.totalAmount, formData.selectedRooms, loading, lastEditedAmount]);
+
+    const handleRoomChange = (e) => {
+        const options = e.target.options;
+        const selected = [];
+        for (let i = 0; i < options.length; i++) {
+            if (options[i].selected) {
+                selected.push(options[i].value);
+            }
+        }
+        setFormData({ ...formData, selectedRooms: selected });
+    };
 
     const handleChange = (e) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+        const { name, value } = e.target;
+        let updates = { [name]: value };
+        
+        if (name === 'checkInDate' && value) {
+            const newCheckIn = startOfDay(parseISO(value));
+            const currentCheckOut = formData.checkOutDate ? startOfDay(parseISO(formData.checkOutDate)) : null;
+            
+            if (!currentCheckOut || currentCheckOut <= newCheckIn) {
+                updates.checkOutDate = format(addDays(newCheckIn, 1), 'yyyy-MM-dd');
+            }
+        }
+        
+        setFormData(prev => ({ ...prev, ...updates }));
+    };
+
+    const handleAmountChange = (e) => {
+        setLastEditedAmount(e.target.name);
+        handleChange(e);
     };
 
     const handleAddPayment = () => {
@@ -90,12 +181,14 @@ export default function EditBooking() {
         setSubmitError('');
         const payload = {
             ...formData,
+            roomNames: formData.selectedRooms,
             advancedAmount: totalPaid,
             advancedPayments: JSON.stringify(advancedPayments)
         };
+        delete payload.selectedRooms;
 
         try {
-            const res = await fetchWithAuth(`/api/reservations/${id}`, {
+            const res = await fetchWithAuth(`/api/reservations/group/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -140,7 +233,7 @@ export default function EditBooking() {
                     </div>
                     <div className="form-group">
                         <label className="form-label">NIC or Passport</label>
-                        <input required type="text" className="form-control" name="nicOrPassport" value={formData.nicOrPassport} onChange={handleChange} />
+                        <input type="text" className="form-control" name="nicOrPassport" value={formData.nicOrPassport} onChange={handleChange} />
                     </div>
                     <div className="form-group">
                         <label className="form-label">Phone No</label>
@@ -166,14 +259,16 @@ export default function EditBooking() {
                         <input required type="date" className="form-control" name="checkOutDate" value={formData.checkOutDate} onChange={handleChange} />
                     </div>
                     <div className="form-group">
-                        <label className="form-label">Assign Room</label>
-                        <select className="form-control" name="roomName" onChange={handleChange} value={formData.roomName}>
-                            <option value="Standard 1">Standard 1</option>
-                            <option value="Standard 2">Standard 2</option>
-                            <option value="Standard 3">Standard 3</option>
-                            <option value="Standard 4">Standard 4</option>
-                            <option value="Family Studio">Family Studio</option>
+                        <label className="form-label">Assign Room(s)</label>
+                        <select multiple className="form-control" style={{ height: '120px' }} value={formData.selectedRooms} onChange={handleRoomChange}>
+                            {availableRooms.map(room => (
+                                <option key={room.id} value={room.name}>{room.name} ({room.type})</option>
+                            ))}
                         </select>
+                        {formData.checkInDate && formData.checkOutDate && availableRooms.length === 0 && (
+                            <small style={{ color: 'var(--danger)', display: 'block', marginTop: '0.25rem', fontWeight: 600 }}>No rooms available for these dates!</small>
+                        )}
+                        <small style={{ color: 'var(--text-light)', display: 'block', marginTop: '0.25rem' }}>Hold Ctrl (Windows) or Cmd (Mac) to select multiple rooms</small>
                     </div>
                     <div style={{ gridColumn: 'span 1' }}></div>
 
@@ -182,7 +277,7 @@ export default function EditBooking() {
                     </div>
                     <div className="form-group">
                         <label className="form-label">Unit Price / Night (LKR)</label>
-                        <input required type="number" className="form-control" name="unitPrice" value={formData.unitPrice || ''} onChange={handleChange} />
+                        <input required type="number" step="any" className="form-control" name="unitPrice" value={formData.unitPrice || ''} onChange={handleAmountChange} />
                     </div>
                     <div className="form-group">
                         <label className="form-label">
@@ -193,7 +288,7 @@ export default function EditBooking() {
                                 </span>
                             )}
                         </label>
-                        <input required type="number" className="form-control" name="totalAmount" value={formData.totalAmount || ''} onChange={handleChange} />
+                        <input required type="number" step="any" className="form-control" name="totalAmount" value={formData.totalAmount || ''} onChange={handleAmountChange} />
                     </div>
 
                     <div className="form-group" style={{ gridColumn: 'span 2', backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>

@@ -12,7 +12,7 @@ export default function Dashboard() {
     const [isFullScreen, setIsFullScreen] = useState(false);
 
     const [currentDate, setCurrentDate] = useState(startOfDay(new Date()));
-    const [daysCount, setDaysCount] = useState(14);
+    const [daysCount, setDaysCount] = useState(30);
 
     const days = Array.from({ length: daysCount }).map((_, i) => addDays(currentDate, i));
 
@@ -109,6 +109,7 @@ export default function Dashboard() {
                                 <option value={7}>7 Days</option>
                                 <option value={14}>14 Days</option>
                                 <option value={30}>30 Days</option>
+                                <option value={60}>60 Days</option>
                             </select>
                         </div>
 
@@ -160,7 +161,7 @@ export default function Dashboard() {
                                                     height: '50px'
                                                 }}>
                                                     {res ? (
-                                                        <Link to={`/edit/${res.id}`} style={{ textDecoration: 'none' }}>
+                                                        <Link to={`/edit/${res.groupId || res.id}`} style={{ textDecoration: 'none' }}>
                                                             <div style={{
                                                                 backgroundColor: getColorForBooking(res),
                                                                 color: 'white',

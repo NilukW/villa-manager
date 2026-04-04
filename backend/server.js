@@ -65,31 +65,138 @@ app.get('/api/reservations', (req, res) => {
 app.post('/api/reservations', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+        roomName, roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
     } = req.body;
 
-    const checkSql = `SELECT id FROM reservations WHERE roomName = ? AND checkInDate < ? AND checkOutDate > ?`;
-    db.get(checkSql, [roomName, checkOutDate, checkInDate], (err, row) => {
+    const roomsToBook = roomNames && roomNames.length > 0 ? roomNames : (roomName ? [roomName] : []);
+
+    if (roomsToBook.length === 0) {
+        return res.status(400).json({ error: "No rooms selected" });
+    }
+
+    const checkSql = `SELECT roomName FROM reservations WHERE roomName IN (${roomsToBook.map(() => '?').join(',')}) AND checkInDate < ? AND checkOutDate > ?`;
+    db.all(checkSql, [...roomsToBook, checkOutDate, checkInDate], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (row) return res.status(400).json({ error: `The room '${roomName}' is already booked during these dates!` });
+        if (rows && rows.length > 0) {
+            const conflictRooms = [...new Set(rows.map(r => r.roomName))].join(', ');
+            return res.status(400).json({ error: `The following rooms are already booked during these dates: ${conflictRooms}` });
+        }
 
         const sql = `INSERT INTO reservations (
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-        const params = [
-            guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource || 'Manual'
-        ];
+        const numRooms = roomsToBook.length;
+        const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
+        const splitAdvance = advancedAmount ? (advancedAmount / numRooms) : 0;
+        const newGroupId = Date.now().toString();
+        
+        let parsedPayments = [];
+        try {
+            parsedPayments = advancedPayments ? JSON.parse(advancedPayments) : [];
+        } catch(e) {}
+        
+        const splitPayments = parsedPayments.map(p => ({
+            ...p,
+            amount: p.amount ? (Number(p.amount) / numRooms) : 0
+        }));
 
-        db.run(sql, params, function (err) {
-            if (err) return res.status(400).json({ error: err.message });
-            res.json({
-                message: "Reservation created successfully",
-                data: { id: this.lastID, ...req.body }
+        const insertPromise = (params) => new Promise((resolve, reject) => {
+            db.run(sql, params, function (err) {
+                if (err) reject(err);
+                else resolve(this.lastID);
             });
         });
+
+        Promise.all(roomsToBook.map(rName => {
+            return insertPromise([
+                guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+                rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', newGroupId
+            ]);
+        }))
+        .then(ids => {
+            res.json({
+                message: "Reservation(s) created successfully",
+                data: { id: ids[0], insertedIds: ids, ...req.body }
+            });
+        })
+        .catch(err => {
+            res.status(400).json({ error: err.message });
+        });
+    });
+});
+
+// Get group reservation
+app.get('/api/reservations/group/:groupId', (req, res) => {
+    db.all("SELECT * FROM reservations WHERE groupId = ?", [req.params.groupId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: "Not found" });
+        res.json({ data: rows });
+    });
+});
+
+// Update group reservation
+app.put('/api/reservations/group/:groupId', (req, res) => {
+    const {
+        guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+        roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+    } = req.body;
+    const groupId = req.params.groupId;
+
+    if (!roomNames || roomNames.length === 0) {
+        return res.status(400).json({ error: "No rooms selected" });
+    }
+
+    const checkSql = `SELECT roomName FROM reservations WHERE roomName IN (${roomNames.map(() => '?').join(',')}) AND checkInDate < ? AND checkOutDate > ? AND groupId != ?`;
+    db.all(checkSql, [...roomNames, checkOutDate, checkInDate, groupId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (rows && rows.length > 0) {
+            const conflictRooms = [...new Set(rows.map(r => r.roomName))].join(', ');
+            return res.status(400).json({ error: `The following rooms are already booked during these dates: ${conflictRooms}` });
+        }
+
+        db.run("DELETE FROM reservations WHERE groupId = ?", [groupId], function(delErr) {
+            if (delErr) return res.status(500).json({ error: delErr.message });
+
+            const sql = `INSERT INTO reservations (
+                guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+                roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+            const numRooms = roomNames.length;
+            const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
+            const splitAdvance = advancedAmount ? (advancedAmount / numRooms) : 0;
+            
+            let parsedPayments = [];
+            try { parsedPayments = advancedPayments ? JSON.parse(advancedPayments) : []; } catch(e) {}
+            const splitPayments = parsedPayments.map(p => ({ ...p, amount: p.amount ? (Number(p.amount) / numRooms) : 0 }));
+
+            const insertPromise = (params) => new Promise((resolve, reject) => {
+                db.run(sql, params, function (err) {
+                    if (err) reject(err); else resolve(this.lastID);
+                });
+            });
+
+            Promise.all(roomNames.map(rName => {
+                return insertPromise([
+                    guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
+                    rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId
+                ]);
+            }))
+            .then(ids => {
+                res.json({ message: "Group reservation updated successfully", data: { insertedIds: ids } });
+            })
+            .catch(err => res.status(400).json({ error: err.message }));
+        });
+    });
+});
+
+// Delete group reservation
+app.delete('/api/reservations/group/:groupId', (req, res) => {
+    db.run("DELETE FROM reservations WHERE groupId = ?", req.params.groupId, function (err) {
+        if (err) return res.status(400).json({ error: err.message });
+        res.json({ message: "Group reservation deleted", changes: this.changes });
     });
 });
 

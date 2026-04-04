@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { differenceInDays, parseISO, startOfDay, format } from 'date-fns';
+import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
 import { Plus, X } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 
@@ -8,30 +8,117 @@ export default function AddBooking() {
     const navigate = useNavigate();
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
-        roomName: 'Standard 1', unitPrice: '', totalAmount: '',
+        selectedRooms: [], unitPrice: '', totalAmount: '',
         remarks: '', bookingSource: 'Manual'
     });
 
+    const [lastEditedAmount, setLastEditedAmount] = useState('unitPrice');
     const [advancedPayments, setAdvancedPayments] = useState([]);
     const [submitError, setSubmitError] = useState('');
 
-    // Auto-calculate total amount
+    const [allRooms, setAllRooms] = useState([]);
+    const [allReservations, setAllReservations] = useState([]);
+    const [availableRooms, setAvailableRooms] = useState([]);
+
     useEffect(() => {
-        if (formData.checkInDate && formData.checkOutDate && formData.unitPrice) {
+        Promise.all([
+            fetchWithAuth('/api/rooms').then(res => res.json()),
+            fetchWithAuth('/api/reservations').then(res => res.json())
+        ]).then(([roomsData, resData]) => {
+            const sortedRooms = (roomsData.data || []).sort((a, b) => {
+                if (a.name === 'Family Studio') return 1;
+                if (b.name === 'Family Studio') return -1;
+                return a.name.localeCompare(b.name);
+            });
+            setAllRooms(sortedRooms);
+            setAvailableRooms(sortedRooms);
+            setAllReservations(resData.data || []);
+        }).catch(err => console.error(err));
+    }, []);
+
+    useEffect(() => {
+        if (!formData.checkInDate || !formData.checkOutDate) {
+            setAvailableRooms(allRooms);
+            return;
+        }
+        const checkIn = startOfDay(parseISO(formData.checkInDate));
+        const checkOut = startOfDay(parseISO(formData.checkOutDate));
+
+        const available = allRooms.filter(room => {
+            const isBooked = allReservations.some(res => {
+                if (res.roomName !== room.name) return false;
+                const resIn = startOfDay(parseISO(res.checkInDate));
+                const resOut = startOfDay(parseISO(res.checkOutDate));
+                return resIn < checkOut && resOut > checkIn;
+            });
+            return !isBooked;
+        });
+
+        setAvailableRooms(available);
+
+        if (formData.selectedRooms.length > 0) {
+            const newSelected = formData.selectedRooms.filter(r => available.some(ar => ar.name === r));
+            if (newSelected.length !== formData.selectedRooms.length) {
+                setFormData(prev => ({ ...prev, selectedRooms: newSelected }));
+            }
+        }
+    }, [formData.checkInDate, formData.checkOutDate, allRooms, allReservations]);
+
+
+    // Auto-calculate total amount or unit price
+    useEffect(() => {
+        if (formData.checkInDate && formData.checkOutDate) {
             const checkIn = startOfDay(parseISO(formData.checkInDate));
             const checkOut = startOfDay(parseISO(formData.checkOutDate));
             const days = differenceInDays(checkOut, checkIn);
+            const numRooms = formData.selectedRooms && formData.selectedRooms.length > 0 ? formData.selectedRooms.length : 1;
+
             if (days > 0) {
-                const newTotal = (days * parseFloat(formData.unitPrice)).toString();
-                if (formData.totalAmount !== newTotal) {
-                    setFormData(prev => ({ ...prev, totalAmount: newTotal }));
+                if (lastEditedAmount === 'unitPrice' && formData.unitPrice !== '') {
+                    const expectedTotal = days * parseFloat(formData.unitPrice) * numRooms;
+                    if (formData.totalAmount === '' || Math.abs(parseFloat(formData.totalAmount) - expectedTotal) > 0.01) {
+                        setFormData(prev => ({ ...prev, totalAmount: parseFloat(expectedTotal.toFixed(2)).toString() }));
+                    }
+                } else if (lastEditedAmount === 'totalAmount' && formData.totalAmount !== '') {
+                    const expectedUnit = parseFloat(formData.totalAmount) / (days * numRooms);
+                    if (formData.unitPrice === '' || Math.abs(parseFloat(formData.unitPrice) - expectedUnit) > 0.01) {
+                        setFormData(prev => ({ ...prev, unitPrice: parseFloat(expectedUnit.toFixed(2)).toString() }));
+                    }
                 }
             }
         }
-    }, [formData.checkInDate, formData.checkOutDate, formData.unitPrice]);
+    }, [formData.checkInDate, formData.checkOutDate, formData.unitPrice, formData.totalAmount, formData.selectedRooms, lastEditedAmount]);
+
+    const handleRoomChange = (e) => {
+        const options = e.target.options;
+        const selected = [];
+        for (let i = 0; i < options.length; i++) {
+            if (options[i].selected) {
+                selected.push(options[i].value);
+            }
+        }
+        setFormData({ ...formData, selectedRooms: selected });
+    };
 
     const handleChange = (e) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+        const { name, value } = e.target;
+        let updates = { [name]: value };
+        
+        if (name === 'checkInDate' && value) {
+            const newCheckIn = startOfDay(parseISO(value));
+            const currentCheckOut = formData.checkOutDate ? startOfDay(parseISO(formData.checkOutDate)) : null;
+            
+            if (!currentCheckOut || currentCheckOut <= newCheckIn) {
+                updates.checkOutDate = format(addDays(newCheckIn, 1), 'yyyy-MM-dd');
+            }
+        }
+        
+        setFormData(prev => ({ ...prev, ...updates }));
+    };
+
+    const handleAmountChange = (e) => {
+        setLastEditedAmount(e.target.name);
+        handleChange(e);
     };
 
     const handleAddPayment = () => {
@@ -56,9 +143,11 @@ export default function AddBooking() {
         setSubmitError('');
         const payload = {
             ...formData,
+            roomNames: formData.selectedRooms,
             advancedAmount: totalPaid,
             advancedPayments: JSON.stringify(advancedPayments)
         };
+        delete payload.selectedRooms;
 
         try {
             const res = await fetchWithAuth('/api/reservations', {
@@ -104,7 +193,7 @@ export default function AddBooking() {
                     </div>
                     <div className="form-group">
                         <label className="form-label">NIC or Passport</label>
-                        <input required type="text" className="form-control" name="nicOrPassport" value={formData.nicOrPassport} onChange={handleChange} />
+                        <input type="text" className="form-control" name="nicOrPassport" value={formData.nicOrPassport} onChange={handleChange} />
                     </div>
                     <div className="form-group">
                         <label className="form-label">Phone No</label>
@@ -130,14 +219,16 @@ export default function AddBooking() {
                         <input required type="date" className="form-control" name="checkOutDate" value={formData.checkOutDate} onChange={handleChange} />
                     </div>
                     <div className="form-group">
-                        <label className="form-label">Assign Room</label>
-                        <select className="form-control" name="roomName" onChange={handleChange} value={formData.roomName}>
-                            <option value="Standard 1">Standard 1</option>
-                            <option value="Standard 2">Standard 2</option>
-                            <option value="Standard 3">Standard 3</option>
-                            <option value="Standard 4">Standard 4</option>
-                            <option value="Family Studio">Family Studio</option>
+                        <label className="form-label">Assign Room(s)</label>
+                        <select multiple className="form-control" style={{ height: '120px' }} value={formData.selectedRooms} onChange={handleRoomChange}>
+                            {availableRooms.map(room => (
+                                <option key={room.id} value={room.name}>{room.name} ({room.type})</option>
+                            ))}
                         </select>
+                        {formData.checkInDate && formData.checkOutDate && availableRooms.length === 0 && (
+                            <small style={{ color: 'var(--danger)', display: 'block', marginTop: '0.25rem', fontWeight: 600 }}>No rooms available for these dates!</small>
+                        )}
+                        <small style={{ color: 'var(--text-light)', display: 'block', marginTop: '0.25rem' }}>Hold Ctrl (Windows) or Cmd (Mac) to select multiple rooms</small>
                     </div>
                     <div style={{ gridColumn: 'span 1' }}></div>
 
@@ -146,7 +237,7 @@ export default function AddBooking() {
                     </div>
                     <div className="form-group">
                         <label className="form-label">Unit Price / Night (LKR)</label>
-                        <input required type="number" className="form-control" name="unitPrice" value={formData.unitPrice} onChange={handleChange} />
+                        <input required type="number" step="any" className="form-control" name="unitPrice" value={formData.unitPrice} onChange={handleAmountChange} />
                     </div>
                     <div className="form-group">
                         <label className="form-label">
@@ -157,7 +248,7 @@ export default function AddBooking() {
                                 </span>
                             )}
                         </label>
-                        <input required type="number" className="form-control" name="totalAmount" value={formData.totalAmount} onChange={handleChange} />
+                        <input required type="number" step="any" className="form-control" name="totalAmount" value={formData.totalAmount} onChange={handleAmountChange} />
                     </div>
 
                     <div className="form-group" style={{ gridColumn: 'span 2', backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>

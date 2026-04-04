@@ -13,7 +13,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guestName TEXT NOT NULL,
             phoneNo TEXT,
-            nicOrPassport TEXT NOT NULL,
+            nicOrPassport TEXT,
             checkInDate TEXT NOT NULL,
             checkOutDate TEXT NOT NULL,
             roomName TEXT NOT NULL,
@@ -22,11 +22,18 @@ const db = new sqlite3.Database(dbPath, (err) => {
             advancedAmount REAL,
             advancedPayments TEXT,
             remarks TEXT,
-            bookingSource TEXT DEFAULT 'Manual'
+            bookingSource TEXT DEFAULT 'Manual',
+            groupId TEXT
         )`);
 
         db.run("ALTER TABLE reservations ADD COLUMN advancedPayments TEXT DEFAULT '[]'", (err) => {
             // Error mapped if column already exists
+        });
+
+        db.run("ALTER TABLE reservations ADD COLUMN groupId TEXT", (err) => {
+            if (!err) {
+                db.run("UPDATE reservations SET groupId = CAST(id AS TEXT)");
+            }
         });
 
         // Create Users Table
