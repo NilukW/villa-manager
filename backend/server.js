@@ -65,7 +65,8 @@ app.get('/api/reservations', (req, res) => {
 app.post('/api/reservations', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+        roomName, roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
+        usdAmount, conversionRate
     } = req.body;
 
     const roomsToBook = roomNames && roomNames.length > 0 ? roomNames : (roomName ? [roomName] : []);
@@ -84,12 +85,14 @@ app.post('/api/reservations', (req, res) => {
 
         const sql = `INSERT INTO reservations (
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
+            usdAmount, conversionRate
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const numRooms = roomsToBook.length;
         const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
         const splitAdvance = advancedAmount ? (advancedAmount / numRooms) : 0;
+        const splitUsdAmount = usdAmount ? (usdAmount / numRooms) : null;
         const newGroupId = Date.now().toString();
         
         let parsedPayments = [];
@@ -112,7 +115,8 @@ app.post('/api/reservations', (req, res) => {
         Promise.all(roomsToBook.map(rName => {
             return insertPromise([
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-                rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', newGroupId
+                rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', newGroupId,
+                splitUsdAmount, conversionRate || null
             ]);
         }))
         .then(ids => {
@@ -140,7 +144,8 @@ app.get('/api/reservations/group/:groupId', (req, res) => {
 app.put('/api/reservations/group/:groupId', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+        roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
+        usdAmount, conversionRate
     } = req.body;
     const groupId = req.params.groupId;
 
@@ -161,12 +166,14 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
 
             const sql = `INSERT INTO reservations (
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-                roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
+                usdAmount, conversionRate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
             const numRooms = roomNames.length;
             const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
             const splitAdvance = advancedAmount ? (advancedAmount / numRooms) : 0;
+            const splitUsdAmount = usdAmount ? (usdAmount / numRooms) : null;
             
             let parsedPayments = [];
             try { parsedPayments = advancedPayments ? JSON.parse(advancedPayments) : []; } catch(e) {}
@@ -181,7 +188,8 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
             Promise.all(roomNames.map(rName => {
                 return insertPromise([
                     guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-                    rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId
+                    rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId,
+                    splitUsdAmount, conversionRate || null
                 ]);
             }))
             .then(ids => {
@@ -213,7 +221,8 @@ app.get('/api/reservations/:id', (req, res) => {
 app.put('/api/reservations/:id', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource
+        roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
+        usdAmount, conversionRate
     } = req.body;
 
     const checkSql = `SELECT id FROM reservations WHERE roomName = ? AND checkInDate < ? AND checkOutDate > ? AND id != ?`;
@@ -223,12 +232,14 @@ app.put('/api/reservations/:id', (req, res) => {
 
         const sql = `UPDATE reservations SET 
             guestName = ?, phoneNo = ?, nicOrPassport = ?, checkInDate = ?, checkOutDate = ?,
-            roomName = ?, unitPrice = ?, totalAmount = ?, advancedAmount = ?, advancedPayments = ?, remarks = ?, bookingSource = ?
+            roomName = ?, unitPrice = ?, totalAmount = ?, advancedAmount = ?, advancedPayments = ?, remarks = ?, bookingSource = ?,
+            usdAmount = ?, conversionRate = ?
             WHERE id = ?`;
 
         const params = [
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
-            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, req.params.id
+            roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, 
+            usdAmount || null, conversionRate || null, req.params.id
         ];
 
         db.run(sql, params, function (err) {

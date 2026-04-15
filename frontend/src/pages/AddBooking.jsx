@@ -9,7 +9,7 @@ export default function AddBooking() {
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
         selectedRooms: [], unitPrice: '', totalAmount: '',
-        remarks: '', bookingSource: 'Manual'
+        remarks: '', bookingSource: 'Manual', usdAmount: '', conversionRate: ''
     });
 
     const [lastEditedAmount, setLastEditedAmount] = useState('unitPrice');
@@ -67,6 +67,16 @@ export default function AddBooking() {
 
     // Auto-calculate total amount or unit price
     useEffect(() => {
+        if (formData.usdAmount && formData.conversionRate) {
+            const calculatedTotal = parseFloat(formData.usdAmount) * parseFloat(formData.conversionRate);
+            if (!isNaN(calculatedTotal) && calculatedTotal > 0) {
+                if (parseFloat(formData.totalAmount) !== calculatedTotal) {
+                    setFormData(prev => ({ ...prev, totalAmount: calculatedTotal.toString() }));
+                    setLastEditedAmount('totalAmount');
+                }
+            }
+        }
+
         if (formData.checkInDate && formData.checkOutDate) {
             const checkIn = startOfDay(parseISO(formData.checkInDate));
             const checkOut = startOfDay(parseISO(formData.checkOutDate));
@@ -235,6 +245,21 @@ export default function AddBooking() {
                     <div className="form-group" style={{ gridColumn: 'span 2', marginTop: '1rem' }}>
                         <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Billing & Payments</h3>
                     </div>
+                    {formData.bookingSource === 'Booking.com' && (
+                        <>
+                            <div className="form-group" style={{ gridColumn: 'span 2', marginTop: '0.5rem', marginBottom: '-0.5rem' }}>
+                                <h4 style={{ margin: 0, color: 'var(--success)' }}>Foreign Currency Calculator (Optional)</h4>
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label" style={{ color: 'var(--success)' }}>USD Amount ($)</label>
+                                <input type="number" step="any" className="form-control" name="usdAmount" value={formData.usdAmount} onChange={handleAmountChange} placeholder="e.g. 100" style={{ borderColor: 'var(--success)' }} />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label" style={{ color: 'var(--success)' }}>Conversion Rate (LKR / 1 USD)</label>
+                                <input type="number" step="any" className="form-control" name="conversionRate" value={formData.conversionRate} onChange={handleAmountChange} placeholder="e.g. 300" style={{ borderColor: 'var(--success)' }} />
+                            </div>
+                        </>
+                    )}
                     <div className="form-group">
                         <label className="form-label">Unit Price / Night (LKR)</label>
                         <input required type="number" step="any" className="form-control" name="unitPrice" value={formData.unitPrice} onChange={handleAmountChange} />

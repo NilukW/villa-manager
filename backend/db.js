@@ -36,6 +36,9 @@ const db = new sqlite3.Database(dbPath, (err) => {
             }
         });
 
+        db.run("ALTER TABLE reservations ADD COLUMN usdAmount REAL", () => {});
+        db.run("ALTER TABLE reservations ADD COLUMN conversionRate REAL", () => {});
+
         // Create Users Table
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
