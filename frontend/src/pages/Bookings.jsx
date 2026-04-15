@@ -95,7 +95,7 @@ export default function Bookings() {
                 if (g.advancedPayments) {
                     const parsed = JSON.parse(g.advancedPayments);
                     if (parsed.length > 0) {
-                        paid = parsed.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+                        paid = parsed.reduce((sum, p) => sum + Number(p.amount || 0), 0) * g.roomNamesList.length;
                     }
                 }
             } catch (e) { }

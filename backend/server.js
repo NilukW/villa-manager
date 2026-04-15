@@ -265,30 +265,21 @@ app.post('/api/reservations/group/:groupId/settle', (req, res) => {
             payments = firstRow.advancedPayments ? JSON.parse(firstRow.advancedPayments) : [];
         } catch (e) {}
 
-        // Add the settlement payment
         const numRooms = rows.length;
         const totalAmountSettled = Number(amountReceived);
         
-        // Push the main entry logic
+        // Add the explicitly split settlement amount to the already split payments list
+        const splitSettledAmount = totalAmountSettled / numRooms;
+        
         payments.push({
             date: new Date().toISOString().split('T')[0],
-            amount: totalAmountSettled.toString()
+            amount: splitSettledAmount.toString()
         });
 
-        // The advancedAmount needs to be split across rows just like AddBooking does
-        const newTotalAdvanced = payments.reduce((sum, p) => sum + Number(p.amount), 0);
-        const splitAdvance = newTotalAdvanced / numRooms;
+        // Calculate the new split advance per room from the updated payments array
+        const splitAdvance = payments.reduce((sum, p) => sum + Number(p.amount), 0);
         
-        // We must update the advancedPayments JSON string (but we split the visual amount per room logic)
-        // Wait, the advancedPayments stores the raw value inputted. 
-        // In AddBooking/EditBooking we sum the raw values.
-        
-        const splitPayments = payments.map(p => ({
-            ...p,
-            amount: (Number(p.amount) / numRooms).toString()
-        }));
-
-        const newPaymentsJson = JSON.stringify(splitPayments);
+        const newPaymentsJson = JSON.stringify(payments);
 
         db.run("UPDATE reservations SET advancedAmount = ?, advancedPayments = ? WHERE groupId = ?", 
             [splitAdvance, newPaymentsJson, groupId], function(updateErr) {
