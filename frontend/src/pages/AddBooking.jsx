@@ -1,14 +1,21 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
 import { Plus, X } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 
 export default function AddBooking() {
     const navigate = useNavigate();
+    const location = useLocation();
+    const state = location.state;
+
+    const initialCheckIn = state?.checkInDate || '';
+    const initialCheckOut = state?.checkInDate ? format(addDays(parseISO(state.checkInDate), 1), 'yyyy-MM-dd') : '';
+    const initialSelectedRooms = state?.roomName ? [state.roomName] : [];
+
     const [formData, setFormData] = useState({
-        guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
-        selectedRooms: [], unitPrice: '', totalAmount: '',
+        guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: initialCheckIn, checkOutDate: initialCheckOut,
+        selectedRooms: initialSelectedRooms, unitPrice: '', totalAmount: '',
         remarks: '', bookingSource: 'Manual', usdAmount: '', conversionRate: ''
     });
 
@@ -56,7 +63,7 @@ export default function AddBooking() {
 
         setAvailableRooms(available);
 
-        if (formData.selectedRooms.length > 0) {
+        if (allRooms.length > 0 && formData.selectedRooms.length > 0) {
             const newSelected = formData.selectedRooms.filter(r => available.some(ar => ar.name === r));
             if (newSelected.length !== formData.selectedRooms.length) {
                 setFormData(prev => ({ ...prev, selectedRooms: newSelected }));

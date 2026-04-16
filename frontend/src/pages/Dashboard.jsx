@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { addDays, format, parseISO, startOfDay } from 'date-fns';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Maximize, Minimize } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 
 export default function Dashboard() {
+    const navigate = useNavigate();
     const [rooms, setRooms] = useState([]);
     const [reservations, setReservations] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -130,14 +131,14 @@ export default function Dashboard() {
                                         return (
                                             <th key={day.toISOString()} style={{
                                                 padding: '0.5rem',
-                                                borderBottom: '2px solid var(--border)',
+                                                borderBottom: isToday ? '2px solid var(--primary)' : '2px solid var(--border)',
                                                 textAlign: 'center',
                                                 fontSize: '0.85rem',
-                                                backgroundColor: isToday ? '#f0f9ff' : 'transparent',
+                                                backgroundColor: isToday ? 'var(--primary)' : 'transparent',
                                                 minWidth: '60px'
                                             }}>
-                                                <div style={{ fontWeight: 600, color: isToday ? 'var(--primary)' : 'var(--text)' }}>{format(day, 'EEE')}</div>
-                                                <div style={{ color: isToday ? 'var(--primary)' : 'var(--text-light)' }}>{format(day, 'MMM d')}</div>
+                                                <div style={{ fontWeight: 600, color: isToday ? 'white' : 'var(--text)' }}>{format(day, 'EEE')}</div>
+                                                <div style={{ color: isToday ? 'rgba(255, 255, 255, 0.9)' : 'var(--text-light)' }}>{format(day, 'MMM d')}</div>
                                             </th>
                                         );
                                     })}
@@ -154,11 +155,19 @@ export default function Dashboard() {
                                             const res = getReservationForRoomAndDate(room.name, day);
                                             const isToday = day.getTime() === startOfDay(new Date()).getTime();
                                             return (
-                                                <td key={day.toISOString()} style={{
+                                                <td key={day.toISOString()} 
+                                                className={!res ? 'calendar-empty-slot' : ''}
+                                                style={{
                                                     padding: '0.25rem',
-                                                    borderLeft: '1px solid var(--border)',
-                                                    backgroundColor: isToday && !res ? '#f0f9ff' : 'transparent',
-                                                    height: '50px'
+                                                    borderLeft: isToday ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                                    backgroundColor: isToday ? (res ? 'transparent' : '#eef2ff') : 'transparent',
+                                                    height: '50px',
+                                                    cursor: !res ? 'pointer' : 'default'
+                                                }}
+                                                onClick={() => {
+                                                    if (!res) {
+                                                        navigate('/add', { state: { checkInDate: format(day, 'yyyy-MM-dd'), roomName: room.name } });
+                                                    }
                                                 }}>
                                                     {res ? (
                                                         <Link to={`/edit/${res.groupId || res.id}`} style={{ textDecoration: 'none' }}>

@@ -195,3 +195,13 @@ body {
 .animate-slide-up {
   animation: slideUp 0.4s ease forwards;
 }
+
+/* Calendar */
+.calendar-empty-slot {
+  transition: all 0.1s ease;
+}
+
+.calendar-empty-slot:hover {
+  background-color: rgba(79, 70, 229, 0.15) !important;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
