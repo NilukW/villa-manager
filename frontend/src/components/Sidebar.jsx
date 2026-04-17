@@ -10,7 +10,7 @@ export default function Sidebar() {
         <aside className="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', justifyContent: 'space-between' }}>
             <div>
                 <div className="sidebar-header">
-                    <h2>VillaManager</h2>
+                    <h2>Tiny house</h2>
                 </div>
                 <nav className="sidebar-nav">
                     <NavLink to="/" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} end>

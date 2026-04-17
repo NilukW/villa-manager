@@ -34,7 +34,7 @@ export default function Login() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: '#f1f5f9' }}>
             <div className="card animate-slide-up" style={{ width: '100%', maxWidth: '400px', padding: '2.5rem 2rem', borderTop: '4px solid var(--primary)' }}>
                 <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-                    <h1 style={{ color: 'var(--primary)', marginBottom: '0.5rem', fontSize: '1.75rem' }}>VillaManager</h1>
+                    <h1 style={{ color: 'var(--primary)', marginBottom: '0.5rem', fontSize: '1.75rem' }}>Tiny house</h1>
                     <p style={{ color: 'var(--text-light)', fontSize: '0.9rem' }}>Secure Login Gateway</p>
                 </div>
 
