@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { PlusCircle } from 'lucide-react';
 import { fetchWithAuth } from '../../utils/api';
 
-export default function ExpenseForm({ onExpenseAdded }) {
+export default function ExpenseForm({ onExpenseAdded, isPending = false }) {
     const [expenseForm, setExpenseForm] = useState({
         date: new Date().toISOString().split('T')[0],
         category: 'Utilities',
@@ -15,12 +15,13 @@ export default function ExpenseForm({ onExpenseAdded }) {
         e.preventDefault();
         setIsSubmitting(true);
         try {
-            const res = await fetchWithAuth('/api/expenses', {
+            const endpoint = isPending ? '/api/pending-expenses' : '/api/expenses';
+            const res = await fetchWithAuth(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(expenseForm)
             });
-            if (!res.ok) throw new Error("Failed to add expense");
+            if (!res.ok) throw new Error(isPending ? "Failed to add pending expense" : "Failed to add expense");
             
             const data = await res.json();
             
@@ -42,7 +43,7 @@ export default function ExpenseForm({ onExpenseAdded }) {
         <div className="card" style={{ padding: '1.5rem', height: '100%' }}>
             <h3 style={{ marginTop: 0, marginBottom: '1.5rem', color: 'var(--text-dark)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <PlusCircle size={20} className="text-primary" />
-                Log New Expense
+                {isPending ? 'Log New Pending Expense' : 'Log New Expense'}
             </h3>
             <form onSubmit={handleAddExpense} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                 <div className="form-group">
@@ -93,7 +94,7 @@ export default function ExpenseForm({ onExpenseAdded }) {
                     />
                 </div>
                 <button type="submit" className="btn btn-primary" disabled={isSubmitting} style={{ marginTop: '0.5rem' }}>
-                    Add Expense Record
+                    {isPending ? 'Add Pending Expense' : 'Add Expense Record'}
                 </button>
             </form>
         </div>

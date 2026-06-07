@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowUpRight, ArrowDownRight, PieChart as PieChartIcon } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Clock, PieChart as PieChartIcon } from 'lucide-react';
 
 export default function FinanceMetricsCards({ metrics }) {
     if (!metrics) return null;
@@ -37,6 +37,23 @@ export default function FinanceMetricsCards({ metrics }) {
                 </div>
                 <p style={{ margin: '1rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-light)' }}>
                     Operational outgoings
+                </p>
+            </div>
+
+            <div className="card animate-slide-up" style={{ padding: '1.5rem', borderLeft: '4px solid var(--warning)', animationDelay: '75ms' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                        <p style={{ color: 'var(--text-light)', margin: 0, fontWeight: 600 }}>Pending Expenses</p>
+                        <h2 style={{ margin: '0.5rem 0 0 0', fontSize: '2rem', color: 'var(--text-dark)' }}>
+                            LKR {(metrics.pendingExpenses || 0).toLocaleString()}
+                        </h2>
+                    </div>
+                    <div style={{ backgroundColor: '#fffbeb', padding: '0.75rem', borderRadius: '50%', color: 'var(--warning)' }}>
+                        <Clock size={24} />
+                    </div>
+                </div>
+                <p style={{ margin: '1rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-light)' }}>
+                    To be paid / settled
                 </p>
             </div>
 

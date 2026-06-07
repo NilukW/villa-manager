@@ -44,6 +44,8 @@ const authenticateToken = (req, res, next) => {
 // Apply auth middleware to API routes
 app.use('/api/rooms', authenticateToken);
 app.use('/api/reservations', authenticateToken);
+app.use('/api/expenses', authenticateToken);
+app.use('/api/pending-expenses', authenticateToken);
 
 // --- Rooms ---
 app.get('/api/rooms', (req, res) => {
@@ -323,6 +325,65 @@ app.delete('/api/expenses/:id', (req, res) => {
     db.run("DELETE FROM expenses WHERE id = ?", [req.params.id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Expense deleted", changes: this.changes });
+    });
+});
+
+// --- Pending Expenses Management ---
+app.get('/api/pending-expenses', (req, res) => {
+    db.all("SELECT * FROM pending_expenses ORDER BY date DESC", [], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ data: rows });
+    });
+});
+
+app.post('/api/pending-expenses', (req, res) => {
+    const { date, category, amount, description } = req.body;
+    if (!date || !category || !amount) return res.status(400).json({ error: "Missing required fields" });
+    
+    db.run("INSERT INTO pending_expenses (date, category, amount, description) VALUES (?, ?, ?, ?)", 
+        [date, category, amount, description || ''], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Pending expense added", data: { id: this.lastID, date, category, amount, description } });
+    });
+});
+
+app.delete('/api/pending-expenses/:id', (req, res) => {
+    db.run("DELETE FROM pending_expenses WHERE id = ?", [req.params.id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Pending expense deleted", changes: this.changes });
+    });
+});
+
+app.post('/api/pending-expenses/:id/settle', (req, res) => {
+    const id = req.params.id;
+    const settlementDate = req.body.date || new Date().toISOString().split('T')[0];
+    
+    db.get("SELECT * FROM pending_expenses WHERE id = ?", [id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row) return res.status(404).json({ error: "Pending expense not found" });
+        
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+            db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, ?, ?, ?)", 
+                [settlementDate, row.category, row.amount, row.description], function(insertErr) {
+                if (insertErr) {
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ error: insertErr.message });
+                }
+                const newExpenseId = this.lastID;
+                db.run("DELETE FROM pending_expenses WHERE id = ?", [id], function(deleteErr) {
+                    if (deleteErr) {
+                        db.run("ROLLBACK");
+                        return res.status(500).json({ error: deleteErr.message });
+                    }
+                    db.run("COMMIT");
+                    res.json({ 
+                        message: "Expense settled successfully", 
+                        data: { id: newExpenseId, date: settlementDate, category: row.category, amount: row.amount, description: row.description } 
+                    });
+                });
+            });
+        });
     });
 });
 

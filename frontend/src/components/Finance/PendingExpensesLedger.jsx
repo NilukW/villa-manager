@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, CheckCircle } from 'lucide-react';
 import { fetchWithAuth } from '../../utils/api';
 
-export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
+export default function PendingExpensesLedger({ expenses, onExpenseDeleted, onExpenseSettled }) {
     const [expenseCategoryFilter, setExpenseCategoryFilter] = useState('');
     const [expenseSortConfig, setExpenseSortConfig] = useState({ key: 'date', direction: 'desc' });
     const [currentPage, setCurrentPage] = useState(1);
@@ -23,11 +23,27 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
     };
 
     const handleDeleteExpense = async (id) => {
-        if (!window.confirm("Delete this expense?")) return;
+        if (!window.confirm("Delete this pending expense?")) return;
         try {
-            const res = await fetchWithAuth(`/api/expenses/${id}`, { method: 'DELETE' });
-            if (!res.ok) throw new Error("Failed to delete expense");
+            const res = await fetchWithAuth(`/api/pending-expenses/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error("Failed to delete pending expense");
             if (onExpenseDeleted) onExpenseDeleted(id);
+        } catch (err) {
+            alert(err.message);
+        }
+    };
+
+    const handleSettleExpense = async (id) => {
+        if (!window.confirm("Mark this pending expense as settled (paid)? It will move to the settled Expenses tab.")) return;
+        try {
+            const res = await fetchWithAuth(`/api/pending-expenses/${id}/settle`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date: new Date().toISOString().split('T')[0] })
+            });
+            if (!res.ok) throw new Error("Failed to settle expense");
+            const data = await res.json();
+            if (onExpenseSettled) onExpenseSettled(id, data.data);
         } catch (err) {
             alert(err.message);
         }
@@ -60,7 +76,7 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
     return (
         <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
             <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc' }}>
-                <h3 style={{ margin: 0, color: 'var(--text-dark)' }}>Recent Expenses Ledger</h3>
+                <h3 style={{ margin: 0, color: 'var(--text-dark)' }}>Pending Expenses Ledger</h3>
             </div>
             <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '600px' }}>
@@ -70,7 +86,7 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
                             <th style={{ padding: '1rem', fontWeight: 600 }} onClick={() => handleSort('category')}>Category{getSortIndicator('category')}</th>
                             <th style={{ padding: '1rem', fontWeight: 600 }} onClick={() => handleSort('amount')}>Amount{getSortIndicator('amount')}</th>
                             <th style={{ padding: '1rem', fontWeight: 600 }}>Description</th>
-                            <th style={{ padding: '1rem', fontWeight: 600 }}></th>
+                            <th style={{ padding: '1rem', fontWeight: 600 }}>Actions</th>
                         </tr>
                         <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)' }}>
                             <td style={{ padding: '0.5rem' }}></td>
@@ -99,7 +115,7 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
                         {paginatedExpenses.length === 0 && (
                             <tr>
                                 <td colSpan={5} style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-light)' }}>
-                                    No expenses match this filter.
+                                    No pending expenses match this filter.
                                 </td>
                             </tr>
                         )}
@@ -107,25 +123,35 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
                             <tr key={exp.id} style={{ borderBottom: '1px solid var(--border)' }}>
                                 <td style={{ padding: '1rem', whiteSpace: 'nowrap' }}>{new Date(exp.date).toLocaleDateString()}</td>
                                 <td style={{ padding: '1rem' }}>
-                                    <span style={{ padding: '0.25rem 0.5rem', backgroundColor: '#f1f5f9', color: 'var(--text)', borderRadius: '1rem', fontSize: '0.85rem' }}>
+                                    <span style={{ padding: '0.25rem 0.5rem', backgroundColor: '#fef3c7', color: '#d97706', borderRadius: '1rem', fontSize: '0.85rem', fontWeight: 500 }}>
                                         {exp.category}
                                     </span>
                                 </td>
-                                <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--danger)' }}>
-                                    - {(exp.amount || 0).toLocaleString()}
+                                <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--warning)' }}>
+                                    {(exp.amount || 0).toLocaleString()}
                                 </td>
                                 <td style={{ padding: '1rem', color: 'var(--text-light)', fontSize: '0.9rem' }}>
                                     {exp.description || '-'}
                                 </td>
-                                <td style={{ padding: '1rem', textAlign: 'right' }}>
-                                    <button 
-                                        className="btn" 
-                                        onClick={() => handleDeleteExpense(exp.id)}
-                                        style={{ padding: '0.4rem', backgroundColor: 'transparent', color: 'inherit', border: 'none', cursor: 'pointer' }}
-                                        title="Delete Expense"
-                                    >
-                                        <Trash2 size={18} className="text-danger" />
-                                    </button>
+                                <td style={{ padding: '1rem' }}>
+                                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                                        <button 
+                                            className="btn" 
+                                            onClick={() => handleSettleExpense(exp.id)}
+                                            style={{ padding: '0.4rem', backgroundColor: 'transparent', color: 'var(--success)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                                            title="Settle Expense (Mark Paid)"
+                                        >
+                                            <CheckCircle size={18} />
+                                        </button>
+                                        <button 
+                                            className="btn" 
+                                            onClick={() => handleDeleteExpense(exp.id)}
+                                            style={{ padding: '0.4rem', backgroundColor: 'transparent', color: 'var(--danger)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                                            title="Delete Pending Expense"
+                                        >
+                                            <Trash2 size={18} />
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         ))}

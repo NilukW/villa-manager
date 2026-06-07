@@ -4,10 +4,12 @@ import FinanceMetricsCards from '../components/Finance/FinanceMetricsCards';
 import ExpenseForm from '../components/Finance/ExpenseForm';
 import EarningsLedger from '../components/Finance/EarningsLedger';
 import ExpensesLedger from '../components/Finance/ExpensesLedger';
+import PendingExpensesLedger from '../components/Finance/PendingExpensesLedger';
 
 export default function Finance() {
     const [bookings, setBookings] = useState([]);
     const [expenses, setExpenses] = useState([]);
+    const [pendingExpenses, setPendingExpenses] = useState([]);
     const [loading, setLoading] = useState(true);
 
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
@@ -23,16 +25,19 @@ export default function Finance() {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const [resRes, expRes] = await Promise.all([
+                const [resRes, expRes, pendRes] = await Promise.all([
                     fetchWithAuth('/api/reservations'),
-                    fetchWithAuth('/api/expenses')
+                    fetchWithAuth('/api/expenses'),
+                    fetchWithAuth('/api/pending-expenses')
                 ]);
                 
                 const bs = await resRes.json();
                 const es = await expRes.json();
+                const ps = await pendRes.json();
                 
                 setBookings(bs.data || []);
                 setExpenses(es.data || []);
+                setPendingExpenses(ps.data || []);
             } catch (err) {
                 console.error("Failed to load finance data", err);
             } finally {
@@ -89,14 +94,16 @@ export default function Finance() {
         });
 
         const totalExpenses = expenses.filter(e => isWithinRange(e.date)).reduce((sum, exp) => sum + Number(exp.amount), 0);
+        const totalPendingExpenses = pendingExpenses.filter(e => isWithinRange(e.date)).reduce((sum, exp) => sum + Number(exp.amount), 0);
 
         return {
             revenue,
             expenses: totalExpenses,
+            pendingExpenses: totalPendingExpenses,
             profit: revenue - totalExpenses,
             earningsList: arr
         };
-    }, [bookings, expenses, dateRange]);
+    }, [bookings, expenses, pendingExpenses, dateRange]);
 
     const downloadCSV = () => {
         const headers = ["Date", "Type", "Category", "Amount", "Description", "Guest/Entity"];
@@ -176,6 +183,19 @@ export default function Finance() {
         setExpenses(expenses.filter(e => e.id !== deletedId));
     };
 
+    const handlePendingExpenseAdded = (newExpense) => {
+        setPendingExpenses([newExpense, ...pendingExpenses]);
+    };
+
+    const handlePendingExpenseDeleted = (deletedId) => {
+        setPendingExpenses(pendingExpenses.filter(e => e.id !== deletedId));
+    };
+
+    const handleExpenseSettled = (settledId, newExpense) => {
+        setPendingExpenses(pendingExpenses.filter(e => e.id !== settledId));
+        setExpenses([newExpense, ...expenses]);
+    };
+
     if (loading) return <div style={{ padding: '2rem' }}>Loading Finance Hub...</div>;
 
     const filteredExpensesForLedger = expenses.filter(e => isWithinRange(e.date));
@@ -198,7 +218,7 @@ export default function Finance() {
 
             {/* Tab Navigation */}
             <div style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
-                {['Overview', 'Earnings', 'Expenses'].map(tab => (
+                {['Overview', 'Earnings', 'Expenses', 'Pending Expenses'].map(tab => (
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
@@ -239,6 +259,21 @@ export default function Finance() {
                             <ExpensesLedger 
                                 expenses={filteredExpensesForLedger} 
                                 onExpenseDeleted={handleExpenseDeleted} 
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'Pending Expenses' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
+                        <div>
+                            <ExpenseForm onExpenseAdded={handlePendingExpenseAdded} isPending={true} />
+                        </div>
+                        <div>
+                            <PendingExpensesLedger 
+                                expenses={pendingExpenses.filter(e => isWithinRange(e.date))} 
+                                onExpenseDeleted={handlePendingExpenseDeleted} 
+                                onExpenseSettled={handleExpenseSettled}
                             />
                         </div>
                     </div>
