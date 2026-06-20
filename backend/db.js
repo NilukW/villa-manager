@@ -93,6 +93,14 @@ const db = new sqlite3.Database(dbPath, (err) => {
             amount REAL NOT NULL,
             description TEXT
         )`);
+
+        // iCal sync integration columns & settings table
+        db.run("ALTER TABLE rooms ADD COLUMN icalUrl TEXT", () => {});
+        db.run("ALTER TABLE reservations ADD COLUMN uid TEXT", () => {});
+        db.run(`CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )`);
     }
 });
 

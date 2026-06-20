@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const db = require('./db');
+const { parseICS, generateICS } = require('./ical');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
@@ -428,6 +429,205 @@ app.delete('/api/users/:id', authenticateToken, (req, res) => {
         res.json({ message: "User deleted", changes: this.changes });
     });
 });
+
+// --- iCal Calendar Sync Integration ---
+
+async function syncCalendars() {
+    return new Promise((resolve, reject) => {
+        db.all("SELECT * FROM rooms WHERE icalUrl IS NOT NULL AND icalUrl != ''", [], async (err, rooms) => {
+            if (err) return reject(err);
+            
+            let roomsSynced = 0;
+            let bookingsCreated = 0;
+            let bookingsUpdated = 0;
+            let bookingsLinked = 0;
+            
+            try {
+                for (const room of rooms) {
+                    console.log(`Syncing room ${room.name} from: ${room.icalUrl}`);
+                    const response = await fetch(room.icalUrl);
+                    if (!response.ok) {
+                        console.error(`Failed to fetch iCal for room ${room.name}: ${response.statusText}`);
+                        continue;
+                    }
+                    const icsText = await response.text();
+                    const events = parseICS(icsText);
+                    roomsSynced++;
+                    
+                    for (const event of events) {
+                        await new Promise((resEvent, rejEvent) => {
+                            // Check if a reservation with this uid already exists
+                            db.get("SELECT * FROM reservations WHERE uid = ?", [event.uid], (err, existing) => {
+                                if (err) return rejEvent(err);
+                                
+                                if (existing) {
+                                    // Update existing booking if dates or name changed
+                                    const updateSql = `UPDATE reservations SET 
+                                        checkInDate = ?, checkOutDate = ?, guestName = ?, remarks = ?
+                                        WHERE id = ?`;
+                                    db.run(updateSql, [
+                                        event.checkInDate, 
+                                        event.checkOutDate, 
+                                        event.guestName, 
+                                        event.remarks, 
+                                        existing.id
+                                    ], function(err) {
+                                        if (err) return rejEvent(err);
+                                        if (this.changes > 0) bookingsUpdated++;
+                                        resEvent();
+                                    });
+                                } else {
+                                    // UID not found. Search for a manual Booking.com booking that matches check-in/out and roomName
+                                    // to link them together without duplication.
+                                    db.get(`SELECT * FROM reservations 
+                                            WHERE roomName = ? AND checkInDate = ? AND checkOutDate = ? 
+                                            AND (uid IS NULL OR uid = '') AND bookingSource = 'Booking.com'`,
+                                            [room.name, event.checkInDate, event.checkOutDate], (err, matchingManual) => {
+                                        if (err) return rejEvent(err);
+                                        
+                                        if (matchingManual) {
+                                            // Link it by updating its UID
+                                            db.run("UPDATE reservations SET uid = ? WHERE id = ?", [event.uid, matchingManual.id], (err) => {
+                                                if (err) return rejEvent(err);
+                                                bookingsLinked++;
+                                                resEvent();
+                                            });
+                                        } else {
+                                            // Create new reservation
+                                            const sql = `INSERT INTO reservations (
+                                                guestName, checkInDate, checkOutDate, roomName, 
+                                                unitPrice, totalAmount, advancedAmount, advancedPayments, 
+                                                remarks, bookingSource, groupId, uid
+                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                                            
+                                            const newGroupId = Date.now().toString() + Math.random().toString(36).substring(2, 5);
+                                            const insertParams = [
+                                                event.guestName,
+                                                event.checkInDate,
+                                                event.checkOutDate,
+                                                room.name,
+                                                0, // default unit price to 0 for imported
+                                                event.totalAmount || 0, // from description if parsed
+                                                0, // advancedAmount
+                                                '[]', // advancedPayments
+                                                event.remarks,
+                                                'Booking.com',
+                                                newGroupId,
+                                                event.uid
+                                            ];
+                                            
+                                            db.run(sql, insertParams, function(err) {
+                                                if (err) return rejEvent(err);
+                                                bookingsCreated++;
+                                                resEvent();
+                                            });
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                    }
+                }
+                
+                // Write success metadata to settings
+                const stats = {
+                    time: new Date().toISOString(),
+                    status: 'success',
+                    roomsSynced,
+                    bookingsCreated,
+                    bookingsUpdated,
+                    bookingsLinked
+                };
+                
+                db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ['lastSync', JSON.stringify(stats)], (err) => {
+                    if (err) console.error("Failed to save sync stats:", err.message);
+                    resolve(stats);
+                });
+                
+            } catch (syncErr) {
+                console.error("Sync loop error:", syncErr);
+                const stats = {
+                    time: new Date().toISOString(),
+                    status: 'failed',
+                    error: syncErr.message
+                };
+                db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ['lastSync', JSON.stringify(stats)], () => {
+                    reject(syncErr);
+                });
+            }
+        });
+    });
+}
+
+// Sync Routes (protected by authenticateToken where appropriate)
+app.put('/api/rooms/:id/ical', authenticateToken, (req, res) => {
+    const { icalUrl } = req.body;
+    const roomId = req.params.id;
+    db.run("UPDATE rooms SET icalUrl = ? WHERE id = ?", [icalUrl || null, roomId], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Room iCal URL updated successfully", changes: this.changes });
+    });
+});
+
+app.post('/api/rooms/sync', authenticateToken, async (req, res) => {
+    try {
+        const stats = await syncCalendars();
+        res.json({ message: "Sync completed successfully", stats });
+    } catch (err) {
+        res.status(500).json({ error: "Sync failed: " + err.message });
+    }
+});
+
+app.get('/api/sync-status', authenticateToken, (req, res) => {
+    db.get("SELECT value FROM settings WHERE key = 'lastSync'", [], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        let stats = null;
+        if (row && row.value) {
+            try {
+                stats = JSON.parse(row.value);
+            } catch (e) {}
+        }
+        res.json({ stats });
+    });
+});
+
+// Public Export URL (No Auth required)
+app.get('/api/ical/room/:id.ics', (req, res) => {
+    const roomId = req.params.id;
+    db.get("SELECT * FROM rooms WHERE id = ?", [roomId], (err, room) => {
+        if (err) return res.status(500).send("Database error: " + err.message);
+        if (!room) return res.status(404).send("Room not found");
+        
+        db.all("SELECT * FROM reservations WHERE roomName = ? ORDER BY checkInDate ASC", [room.name], (err, rows) => {
+            if (err) return res.status(500).send("Database error: " + err.message);
+            
+            const icsContent = generateICS(rows || [], room.name);
+            res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="room_${roomId}.ics"`);
+            res.send(icsContent);
+        });
+    });
+});
+
+// Start background cron task (sync every 30 minutes)
+setInterval(async () => {
+    try {
+        console.log("Running background calendar sync...");
+        await syncCalendars();
+    } catch (err) {
+        console.error("Background sync failed:", err.message);
+    }
+}, 30 * 60 * 1000);
+
+// Run initial sync on server boot after 5 seconds
+setTimeout(async () => {
+    try {
+        console.log("Running initial boot calendar sync...");
+        await syncCalendars();
+    } catch (err) {
+        console.error("Initial sync failed:", err.message);
+    }
+}, 5000);
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);

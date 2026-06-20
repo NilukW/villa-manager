@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, CalendarDays, PlusCircle, LogOut, Users as UsersIcon, PieChart } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, PlusCircle, LogOut, Users as UsersIcon, PieChart, Link2 } from 'lucide-react';
 import { useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
 
@@ -28,6 +28,10 @@ export default function Sidebar() {
                     <NavLink to="/finance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                         <PieChart size={20} />
                         <span>Financials</span>
+                    </NavLink>
+                    <NavLink to="/integrations" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                        <Link2 size={20} />
+                        <span>Channel Sync</span>
                     </NavLink>
                     <NavLink to="/users" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                         <UsersIcon size={20} />
