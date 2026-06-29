@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Users from './pages/Users';
 import Finance from './pages/Finance';
 import Integrations from './pages/Integrations';
+import Analytics from './pages/Analytics';
 
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated } = useContext(AuthContext);
@@ -37,6 +38,7 @@ function AppRoutes() {
       <Route path="/finance" element={<ProtectedRoute><Finance /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
       <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
