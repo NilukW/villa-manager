@@ -262,7 +262,7 @@ app.delete('/api/reservations/:id', (req, res) => {
 
 // Settle group reservation balance
 app.post('/api/reservations/group/:groupId/settle', (req, res) => {
-    const { amountReceived } = req.body;
+    const { amountReceived, date } = req.body;
     const groupId = req.params.groupId;
 
     if (!amountReceived || isNaN(amountReceived)) {
@@ -284,9 +284,10 @@ app.post('/api/reservations/group/:groupId/settle', (req, res) => {
         
         // Add the explicitly split settlement amount to the already split payments list
         const splitSettledAmount = totalAmountSettled / numRooms;
+        const settlementDate = date || new Date().toISOString().split('T')[0];
         
         payments.push({
-            date: new Date().toISOString().split('T')[0],
+            date: settlementDate,
             amount: splitSettledAmount.toString()
         });
 

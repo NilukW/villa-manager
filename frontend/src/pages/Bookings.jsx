@@ -17,6 +17,7 @@ export default function Bookings() {
 
     const [settlingGroup, setSettlingGroup] = useState(null);
     const [settleAmount, setSettleAmount] = useState('');
+    const [settleDate, setSettleDate] = useState(new Date().toISOString().split('T')[0]);
 
     const fetchBookings = () => {
         fetchWithAuth('/api/reservations')
@@ -51,7 +52,7 @@ export default function Bookings() {
             const res = await fetchWithAuth(`/api/reservations/group/${settlingGroup.groupId}/settle`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ amountReceived: settleAmount })
+                body: JSON.stringify({ amountReceived: settleAmount, date: settleDate })
             });
             if (!res.ok) {
                 const data = await res.json();
@@ -191,7 +192,7 @@ export default function Bookings() {
                                 <strong style={{ color: 'var(--danger)' }}>LKR {settlingGroup.pending.toLocaleString()}</strong>
                             </div>
                         </div>
-                        <form onSubmit={handleSettleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                        <form onSubmit={handleSettleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                             <div className="form-group" style={{ textAlign: 'left' }}>
                                 <label className="form-label">Amount Received (LKR)</label>
                                 <input 
@@ -202,6 +203,16 @@ export default function Bookings() {
                                     onChange={e => setSettleAmount(e.target.value)} 
                                     required 
                                     autoFocus
+                                />
+                            </div>
+                            <div className="form-group" style={{ textAlign: 'left' }}>
+                                <label className="form-label">Payment Date</label>
+                                <input 
+                                    type="date" 
+                                    className="form-control" 
+                                    value={settleDate} 
+                                    onChange={e => setSettleDate(e.target.value)} 
+                                    required 
                                 />
                             </div>
                             <div style={{ display: 'flex', gap: '1rem' }}>
@@ -333,6 +344,7 @@ export default function Bookings() {
                                                         onClick={() => {
                                                             setSettlingGroup({ ...book, pending, groupId: book.groupId || book.id });
                                                             setSettleAmount(pending.toString());
+                                                            setSettleDate(new Date().toISOString().split('T')[0]);
                                                         }}
                                                     >
                                                         ✓ Settle
