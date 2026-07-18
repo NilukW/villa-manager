@@ -179,8 +179,8 @@ export default function Bookings() {
     return (
         <div className="animate-slide-up">
             {settlingGroup && (
-                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', minWidth: '400px' }}>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)', overflowY: 'auto', padding: '2rem 1rem' }}>
+                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', minWidth: '400px', maxWidth: '100%', marginTop: '5vh', marginBottom: '2rem' }}>
                         <h2 style={{ marginTop: 0, marginBottom: '1rem', color: 'var(--text-dark)' }}>Settle Balance</h2>
                         <div style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
