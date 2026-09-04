@@ -78,17 +78,19 @@ export default function Bookings() {
         setCurrentPage(1);
     };
 
+    const isBreakfast = (val) => val === 1 || val === true || val === '1' || val === 'true';
+
     const groupedBookings = useMemo(() => {
         const groups = {};
         bookings.forEach(b => {
             const gid = b.groupId || b.id; // Fallback for old data
             if (!groups[gid]) {
-                groups[gid] = { ...b, groupId: gid, totalAmount: 0, advancedAmount: 0, roomNamesList: [], breakfastIncluded: Boolean(b.breakfastIncluded) };
+                groups[gid] = { ...b, groupId: gid, totalAmount: 0, advancedAmount: 0, roomNamesList: [], breakfastIncluded: isBreakfast(b.breakfastIncluded) };
             }
             groups[gid].totalAmount += Number(b.totalAmount || 0);
             groups[gid].advancedAmount += Number(b.advancedAmount || 0);
             groups[gid].roomNamesList.push(b.roomName);
-            if (b.breakfastIncluded) groups[gid].breakfastIncluded = true;
+            if (isBreakfast(b.breakfastIncluded)) groups[gid].breakfastIncluded = true;
         });
         
         return Object.values(groups).map(g => {
@@ -159,7 +161,7 @@ export default function Bookings() {
             const row = [
                 b.id, `"${b.guestName}"`, `"${b.phoneNo || ''}"`, `"${b.nicOrPassport}"`,
                 b.checkInDate, b.checkOutDate, `"${b.roomName}"`,
-                b.breakfastIncluded ? "Yes" : "No",
+                isBreakfast(b.breakfastIncluded) ? "Yes" : "No",
                 b.unitPrice, b.totalAmount, paid, pending, `"${b.bookingSource}"`, `"${b.remarks || ''}"`
             ];
             csvRows.push(row.join(','));
@@ -306,7 +308,7 @@ export default function Bookings() {
                                                 {book.bookingSource === 'Booking.com' && (
                                                     <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold' }}>Booking.com</span>
                                                 )}
-                                                {Boolean(book.breakfastIncluded) && (
+                                                {isBreakfast(book.breakfastIncluded) && (
                                                     <span style={{ backgroundColor: '#fef3c7', color: '#92400e', border: '1px solid #f59e0b', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }} title="Breakfast Included">
                                                         🍳 Breakfast
                                                     </span>

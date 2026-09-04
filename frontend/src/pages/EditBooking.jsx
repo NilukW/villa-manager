@@ -47,7 +47,7 @@ export default function EditBooking() {
                 const sumUsd = group.reduce((sum, r) => sum + Number(r.usdAmount || 0), 0);
                 sanitizedData.usdAmount = sumUsd ? sumUsd.toString() : '';
                 sanitizedData.conversionRate = firstRow.conversionRate ? firstRow.conversionRate.toString() : '';
-                sanitizedData.breakfastIncluded = Boolean(firstRow.breakfastIncluded);
+                sanitizedData.breakfastIncluded = (firstRow.breakfastIncluded === 1 || firstRow.breakfastIncluded === true || firstRow.breakfastIncluded === '1' || firstRow.breakfastIncluded === 'true');
                 
                 setFormData(sanitizedData);
 
@@ -199,7 +199,8 @@ export default function EditBooking() {
             ...formData,
             roomNames: formData.selectedRooms,
             advancedAmount: totalPaid,
-            advancedPayments: JSON.stringify(advancedPayments)
+            advancedPayments: JSON.stringify(advancedPayments),
+            breakfastIncluded: (formData.breakfastIncluded === true || formData.breakfastIncluded === 1 || formData.breakfastIncluded === '1' || formData.breakfastIncluded === 'true') ? 1 : 0
         };
         delete payload.selectedRooms;
 

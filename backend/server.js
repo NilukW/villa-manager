@@ -56,11 +56,22 @@ app.get('/api/rooms', (req, res) => {
     });
 });
 
+// Helper to robustly parse breakfastIncluded to 1 or 0
+const parseBreakfast = (val) => (val === true || val === 1 || val === '1' || val === 'true') ? 1 : 0;
+const formatReservationRow = (row) => {
+    if (!row) return row;
+    return {
+        ...row,
+        breakfastIncluded: parseBreakfast(row.breakfastIncluded)
+    };
+};
+
 // --- Reservations ---
 app.get('/api/reservations', (req, res) => {
     db.all("SELECT * FROM reservations ORDER BY checkInDate ASC", [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ data: rows });
+        const sanitized = (rows || []).map(formatReservationRow);
+        res.json({ data: sanitized });
     });
 });
 
@@ -119,7 +130,7 @@ app.post('/api/reservations', (req, res) => {
             return insertPromise([
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                 rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', newGroupId,
-                splitUsdAmount, conversionRate || null, breakfastIncluded ? 1 : 0
+                splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded)
             ]);
         }))
         .then(ids => {
@@ -139,7 +150,8 @@ app.get('/api/reservations/group/:groupId', (req, res) => {
     db.all("SELECT * FROM reservations WHERE groupId = ?", [req.params.groupId], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!rows || rows.length === 0) return res.status(404).json({ error: "Not found" });
-        res.json({ data: rows });
+        const sanitized = rows.map(formatReservationRow);
+        res.json({ data: sanitized });
     });
 });
 
@@ -192,7 +204,7 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
                 return insertPromise([
                     guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                     rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId,
-                    splitUsdAmount, conversionRate || null, breakfastIncluded ? 1 : 0
+                    splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded)
                 ]);
             }))
             .then(ids => {
@@ -216,7 +228,7 @@ app.get('/api/reservations/:id', (req, res) => {
     db.get("SELECT * FROM reservations WHERE id = ?", [req.params.id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: "Not found" });
-        res.json({ data: row });
+        res.json({ data: formatReservationRow(row) });
     });
 });
 
@@ -242,7 +254,7 @@ app.put('/api/reservations/:id', (req, res) => {
         const params = [
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
             roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, 
-            usdAmount || null, conversionRate || null, breakfastIncluded ? 1 : 0, req.params.id
+            usdAmount || null, conversionRate || null, parseBreakfast(breakfastIncluded), req.params.id
         ];
 
         db.run(sql, params, function (err) {

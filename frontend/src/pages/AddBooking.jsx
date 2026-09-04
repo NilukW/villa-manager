@@ -163,7 +163,8 @@ export default function AddBooking() {
             ...formData,
             roomNames: formData.selectedRooms,
             advancedAmount: totalPaid,
-            advancedPayments: JSON.stringify(advancedPayments)
+            advancedPayments: JSON.stringify(advancedPayments),
+            breakfastIncluded: (formData.breakfastIncluded === true || formData.breakfastIncluded === 1 || formData.breakfastIncluded === '1' || formData.breakfastIncluded === 'true') ? 1 : 0
         };
         delete payload.selectedRooms;
 
