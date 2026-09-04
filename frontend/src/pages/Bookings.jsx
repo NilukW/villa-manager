@@ -83,11 +83,12 @@ export default function Bookings() {
         bookings.forEach(b => {
             const gid = b.groupId || b.id; // Fallback for old data
             if (!groups[gid]) {
-                groups[gid] = { ...b, groupId: gid, totalAmount: 0, advancedAmount: 0, roomNamesList: [] };
+                groups[gid] = { ...b, groupId: gid, totalAmount: 0, advancedAmount: 0, roomNamesList: [], breakfastIncluded: Boolean(b.breakfastIncluded) };
             }
             groups[gid].totalAmount += Number(b.totalAmount || 0);
             groups[gid].advancedAmount += Number(b.advancedAmount || 0);
             groups[gid].roomNamesList.push(b.roomName);
+            if (b.breakfastIncluded) groups[gid].breakfastIncluded = true;
         });
         
         return Object.values(groups).map(g => {
@@ -148,7 +149,7 @@ export default function Bookings() {
         const listToExport = sortedBookings.length > 0 ? sortedBookings : groupedBookings;
         if (listToExport.length === 0) return;
 
-        const headers = ["ID", "Guest Name", "Phone", "NIC", "Check-in", "Check-out", "Room Name", "Unit Price", "Total Amount", "Total Paid", "Pending Balance", "Source", "Remarks"];
+        const headers = ["ID", "Guest Name", "Phone", "NIC", "Check-in", "Check-out", "Room Name", "Breakfast Included", "Unit Price", "Total Amount", "Total Paid", "Pending Balance", "Source", "Remarks"];
         const csvRows = [headers.join(',')];
 
         listToExport.forEach(b => {
@@ -158,6 +159,7 @@ export default function Bookings() {
             const row = [
                 b.id, `"${b.guestName}"`, `"${b.phoneNo || ''}"`, `"${b.nicOrPassport}"`,
                 b.checkInDate, b.checkOutDate, `"${b.roomName}"`,
+                b.breakfastIncluded ? "Yes" : "No",
                 b.unitPrice, b.totalAmount, paid, pending, `"${b.bookingSource}"`, `"${b.remarks || ''}"`
             ];
             csvRows.push(row.join(','));
@@ -299,10 +301,15 @@ export default function Bookings() {
                                 return (
                                     <tr key={book.id} style={{ borderBottom: '1px solid var(--border)', backgroundColor: pending <= 0.05 ? '#f0fdf4' : 'transparent' }}>
                                         <td style={{ padding: '0.75rem' }}>
-                                            <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                            <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                                                 {book.guestName}
                                                 {book.bookingSource === 'Booking.com' && (
                                                     <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold' }}>Booking.com</span>
+                                                )}
+                                                {Boolean(book.breakfastIncluded) && (
+                                                    <span style={{ backgroundColor: '#fef3c7', color: '#92400e', border: '1px solid #f59e0b', fontSize: '0.65rem', padding: '0.15rem 0.4rem', borderRadius: '4px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '0.15rem' }} title="Breakfast Included">
+                                                        🍳 Breakfast
+                                                    </span>
                                                 )}
                                             </div>
                                         </td>

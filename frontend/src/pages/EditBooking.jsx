@@ -11,7 +11,7 @@ export default function EditBooking() {
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
         selectedRooms: [], unitPrice: '', totalAmount: '',
-        remarks: '', bookingSource: 'Manual', usdAmount: '', conversionRate: ''
+        remarks: '', bookingSource: 'Manual', usdAmount: '', conversionRate: '', breakfastIncluded: false
     });
     const [lastEditedAmount, setLastEditedAmount] = useState('unitPrice');
     const [advancedPayments, setAdvancedPayments] = useState([]);
@@ -47,6 +47,7 @@ export default function EditBooking() {
                 const sumUsd = group.reduce((sum, r) => sum + Number(r.usdAmount || 0), 0);
                 sanitizedData.usdAmount = sumUsd ? sumUsd.toString() : '';
                 sanitizedData.conversionRate = firstRow.conversionRate ? firstRow.conversionRate.toString() : '';
+                sanitizedData.breakfastIncluded = Boolean(firstRow.breakfastIncluded);
                 
                 setFormData(sanitizedData);
 
@@ -153,8 +154,9 @@ export default function EditBooking() {
     };
 
     const handleChange = (e) => {
-        const { name, value } = e.target;
-        let updates = { [name]: value };
+        const { name, value, type, checked } = e.target;
+        const val = type === 'checkbox' ? checked : value;
+        let updates = { [name]: val };
         
         if (name === 'checkInDate' && value) {
             const newCheckIn = startOfDay(parseISO(value));
@@ -284,7 +286,18 @@ export default function EditBooking() {
                         )}
                         <small style={{ color: 'var(--text-light)', display: 'block', marginTop: '0.25rem' }}>Hold Ctrl (Windows) or Cmd (Mac) to select multiple rooms</small>
                     </div>
-                    <div style={{ gridColumn: 'span 1' }}></div>
+                    <div className="form-group" style={{ gridColumn: 'span 1', display: 'flex', alignItems: 'center', marginTop: '1.5rem' }}>
+                        <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.95rem', fontWeight: 600, userSelect: 'none', backgroundColor: formData.breakfastIncluded ? '#fef3c7' : '#f8fafc', color: formData.breakfastIncluded ? '#92400e' : 'var(--text)', padding: '0.6rem 1rem', borderRadius: '0.5rem', border: '1px solid ' + (formData.breakfastIncluded ? '#f59e0b' : 'var(--border)'), width: '100%', transition: 'all 0.15s ease' }}>
+                            <input
+                                type="checkbox"
+                                name="breakfastIncluded"
+                                checked={formData.breakfastIncluded}
+                                onChange={handleChange}
+                                style={{ width: '1.2rem', height: '1.2rem', accentColor: '#d97706', cursor: 'pointer' }}
+                            />
+                            <span>🍳 Breakfast Included</span>
+                        </label>
+                    </div>
 
                     <div className="form-group" style={{ gridColumn: 'span 2', marginTop: '1rem' }}>
                         <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Billing & Payments</h3>

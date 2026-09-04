@@ -23,7 +23,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
             advancedPayments TEXT,
             remarks TEXT,
             bookingSource TEXT DEFAULT 'Manual',
-            groupId TEXT
+            groupId TEXT,
+            breakfastIncluded INTEGER DEFAULT 0
         )`);
 
         db.run("ALTER TABLE reservations ADD COLUMN advancedPayments TEXT DEFAULT '[]'", (err) => {
@@ -38,6 +39,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
         db.run("ALTER TABLE reservations ADD COLUMN usdAmount REAL", () => {});
         db.run("ALTER TABLE reservations ADD COLUMN conversionRate REAL", () => {});
+        db.run("ALTER TABLE reservations ADD COLUMN breakfastIncluded INTEGER DEFAULT 0", () => {});
 
         // Create Users Table
         db.run(`CREATE TABLE IF NOT EXISTS users (

@@ -69,7 +69,7 @@ app.post('/api/reservations', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
         roomName, roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
-        usdAmount, conversionRate
+        usdAmount, conversionRate, breakfastIncluded
     } = req.body;
 
     const roomsToBook = roomNames && roomNames.length > 0 ? roomNames : (roomName ? [roomName] : []);
@@ -89,8 +89,8 @@ app.post('/api/reservations', (req, res) => {
         const sql = `INSERT INTO reservations (
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
             roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
-            usdAmount, conversionRate
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            usdAmount, conversionRate, breakfastIncluded
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const numRooms = roomsToBook.length;
         const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
@@ -119,7 +119,7 @@ app.post('/api/reservations', (req, res) => {
             return insertPromise([
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                 rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', newGroupId,
-                splitUsdAmount, conversionRate || null
+                splitUsdAmount, conversionRate || null, breakfastIncluded ? 1 : 0
             ]);
         }))
         .then(ids => {
@@ -148,7 +148,7 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
         roomNames, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
-        usdAmount, conversionRate
+        usdAmount, conversionRate, breakfastIncluded
     } = req.body;
     const groupId = req.params.groupId;
 
@@ -170,8 +170,8 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
             const sql = `INSERT INTO reservations (
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                 roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
-                usdAmount, conversionRate
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                usdAmount, conversionRate, breakfastIncluded
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
             const numRooms = roomNames.length;
             const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
@@ -192,7 +192,7 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
                 return insertPromise([
                     guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                     rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId,
-                    splitUsdAmount, conversionRate || null
+                    splitUsdAmount, conversionRate || null, breakfastIncluded ? 1 : 0
                 ]);
             }))
             .then(ids => {
@@ -225,7 +225,7 @@ app.put('/api/reservations/:id', (req, res) => {
     const {
         guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
         roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource,
-        usdAmount, conversionRate
+        usdAmount, conversionRate, breakfastIncluded
     } = req.body;
 
     const checkSql = `SELECT id FROM reservations WHERE roomName = ? AND checkInDate < ? AND checkOutDate > ? AND id != ?`;
@@ -236,13 +236,13 @@ app.put('/api/reservations/:id', (req, res) => {
         const sql = `UPDATE reservations SET 
             guestName = ?, phoneNo = ?, nicOrPassport = ?, checkInDate = ?, checkOutDate = ?,
             roomName = ?, unitPrice = ?, totalAmount = ?, advancedAmount = ?, advancedPayments = ?, remarks = ?, bookingSource = ?,
-            usdAmount = ?, conversionRate = ?
+            usdAmount = ?, conversionRate = ?, breakfastIncluded = ?
             WHERE id = ?`;
 
         const params = [
             guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
             roomName, unitPrice, totalAmount, advancedAmount, advancedPayments || '[]', remarks, bookingSource, 
-            usdAmount || null, conversionRate || null, req.params.id
+            usdAmount || null, conversionRate || null, breakfastIncluded ? 1 : 0, req.params.id
         ];
 
         db.run(sql, params, function (err) {
@@ -498,8 +498,8 @@ async function syncCalendars() {
                                             const sql = `INSERT INTO reservations (
                                                 guestName, checkInDate, checkOutDate, roomName, 
                                                 unitPrice, totalAmount, advancedAmount, advancedPayments, 
-                                                remarks, bookingSource, groupId, uid
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                                                remarks, bookingSource, groupId, uid, breakfastIncluded
+                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
                                             
                                             const newGroupId = Date.now().toString() + Math.random().toString(36).substring(2, 5);
                                             const insertParams = [
@@ -514,7 +514,8 @@ async function syncCalendars() {
                                                 event.remarks,
                                                 'Booking.com',
                                                 newGroupId,
-                                                event.uid
+                                                event.uid,
+                                                0
                                             ];
                                             
                                             db.run(sql, insertParams, function(err) {
