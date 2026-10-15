@@ -103,6 +103,37 @@ const db = new sqlite3.Database(dbPath, (err) => {
             key TEXT PRIMARY KEY,
             value TEXT
         )`);
+
+        // Create Laundry Bills Tables
+        db.run(`CREATE TABLE IF NOT EXISTS laundry_bills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoiceNo TEXT NOT NULL,
+            vendor TEXT DEFAULT 'Shiny Laundry',
+            date TEXT NOT NULL,
+            month TEXT,
+            totalQty INTEGER DEFAULT 0,
+            totalAmount REAL NOT NULL,
+            status TEXT DEFAULT 'Pending',
+            paidDate TEXT,
+            paymentNotes TEXT,
+            expenseId INTEGER,
+            pdfPath TEXT,
+            originalFileName TEXT,
+            dailyBreakdown TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS laundry_bill_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            billId INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            unitPrice REAL NOT NULL,
+            amount REAL NOT NULL,
+            FOREIGN KEY (billId) REFERENCES laundry_bills (id) ON DELETE CASCADE
+        )`);
+
+        db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_laundry_bills_invoice ON laundry_bills (invoiceNo COLLATE NOCASE)", () => {});
     }
 });
 

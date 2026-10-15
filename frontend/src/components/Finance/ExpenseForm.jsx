@@ -65,7 +65,8 @@ export default function ExpenseForm({ onExpenseAdded, isPending = false }) {
                         required
                     >
                         <option value="Maintenance">Maintenance & Repairs</option>
-                        <option value="Cleaning">Cleaning / Laundry</option>
+                        <option value="Laundry">Laundry Service</option>
+                        <option value="Cleaning">Cleaning & Housekeeping</option>
                         <option value="Utilities">Utilities (Water, Power, Internet)</option>
                         <option value="Salary">Staff Salary</option>
                         <option value="Supplies">Supplies & Groceries</option>

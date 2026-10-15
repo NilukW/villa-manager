@@ -4,6 +4,10 @@ const db = require('./db');
 const { parseICS, generateICS } = require('./ical');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const { parseLaundryPdf } = require('./laundryParser');
 require('dotenv').config();
 
 const app = express();
@@ -12,6 +16,28 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'villamanager_super_secret_key_2026';
+
+// Laundry PDF uploads directory
+const laundryUploadDir = path.join(__dirname, 'uploads', 'laundry');
+if (!fs.existsSync(laundryUploadDir)) {
+    fs.mkdirSync(laundryUploadDir, { recursive: true });
+}
+
+const laundryStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, laundryUploadDir);
+    },
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_\-]/g, '_');
+        cb(null, `${Date.now()}-${base}${ext}`);
+    }
+});
+
+const uploadLaundry = multer({
+    storage: laundryStorage,
+    limits: { fileSize: 25 * 1024 * 1024 }
+});
 
 // --- Auth Routes ---
 app.post('/api/login', (req, res) => {
@@ -47,6 +73,12 @@ app.use('/api/rooms', authenticateToken);
 app.use('/api/reservations', authenticateToken);
 app.use('/api/expenses', authenticateToken);
 app.use('/api/pending-expenses', authenticateToken);
+app.use('/api/laundry', (req, res, next) => {
+    if (req.path.startsWith('/files/')) {
+        return next();
+    }
+    return authenticateToken(req, res, next);
+});
 
 // --- Rooms ---
 app.get('/api/rooms', (req, res) => {
@@ -396,6 +428,400 @@ app.post('/api/pending-expenses/:id/settle', (req, res) => {
                         data: { id: newExpenseId, date: settlementDate, category: row.category, amount: row.amount, description: row.description } 
                     });
                 });
+            });
+        });
+    });
+});
+
+// --- Laundry Bills & Analytics Management ---
+
+// Serve uploaded laundry invoice PDFs
+app.get('/api/laundry/files/:filename', (req, res) => {
+    const safeName = path.basename(req.params.filename);
+    const filePath = path.join(laundryUploadDir, safeName);
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found" });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    res.sendFile(filePath);
+});
+
+// Upload and preview PDF data (with duplicate check)
+app.post('/api/laundry/upload-preview', uploadLaundry.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: "No PDF file provided" });
+    }
+    try {
+        const fileBuffer = fs.readFileSync(req.file.path);
+        const parsed = await parseLaundryPdf(fileBuffer);
+
+        // Check if a bill with this invoice number has already been uploaded
+        if (parsed.invoiceNo) {
+            db.get("SELECT id, invoiceNo, date, status, totalAmount FROM laundry_bills WHERE LOWER(invoiceNo) = LOWER(?)", [parsed.invoiceNo], (dbErr, existing) => {
+                if (dbErr) return res.status(500).json({ error: dbErr.message });
+                if (existing) {
+                    // Delete temporary uploaded file to prevent disk clutter
+                    if (req.file && fs.existsSync(req.file.path)) {
+                        try { fs.unlinkSync(req.file.path); } catch(e) {}
+                    }
+                    return res.status(409).json({
+                        error: `Invoice "${parsed.invoiceNo}" has already been uploaded on ${existing.date} (Status: ${existing.status}, Amount: LKR ${(existing.totalAmount || 0).toLocaleString()}). Duplicate bills cannot be uploaded.`,
+                        duplicate: true,
+                        existingBill: existing
+                    });
+                }
+
+                res.json({
+                    message: "Laundry invoice parsed successfully",
+                    data: parsed,
+                    file: {
+                        filename: req.file.filename,
+                        originalName: req.file.originalname,
+                        pdfPath: `/api/laundry/files/${req.file.filename}`,
+                        size: req.file.size
+                    }
+                });
+            });
+        } else {
+            res.json({
+                message: "Laundry invoice parsed successfully",
+                data: parsed,
+                file: {
+                    filename: req.file.filename,
+                    originalName: req.file.originalname,
+                    pdfPath: `/api/laundry/files/${req.file.filename}`,
+                    size: req.file.size
+                }
+            });
+        }
+    } catch (err) {
+        console.error("Error parsing laundry PDF:", err);
+        res.status(500).json({ error: "Failed to parse laundry PDF: " + err.message });
+    }
+});
+
+// Get all laundry bills with their line items
+app.get('/api/laundry/bills', (req, res) => {
+    db.all("SELECT * FROM laundry_bills ORDER BY date DESC, id DESC", [], (err, bills) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!bills || bills.length === 0) return res.json({ data: [] });
+
+        const billIds = bills.map(b => b.id);
+        const placeholders = billIds.map(() => '?').join(',');
+        db.all(`SELECT * FROM laundry_bill_items WHERE billId IN (${placeholders}) ORDER BY id ASC`, billIds, (itemErr, items) => {
+            if (itemErr) return res.status(500).json({ error: itemErr.message });
+
+            const itemsMap = {};
+            (items || []).forEach(it => {
+                if (!itemsMap[it.billId]) itemsMap[it.billId] = [];
+                itemsMap[it.billId].push(it);
+            });
+
+            const enriched = bills.map(b => {
+                let parsedDaily = {};
+                try {
+                    if (b.dailyBreakdown) parsedDaily = JSON.parse(b.dailyBreakdown);
+                } catch(e) {}
+                return {
+                    ...b,
+                    dailyBreakdown: parsedDaily,
+                    items: itemsMap[b.id] || []
+                };
+            });
+
+            res.json({ data: enriched });
+        });
+    });
+});
+
+// Get single laundry bill
+app.get('/api/laundry/bills/:id', (req, res) => {
+    db.get("SELECT * FROM laundry_bills WHERE id = ?", [req.params.id], (err, bill) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+
+        db.all("SELECT * FROM laundry_bill_items WHERE billId = ? ORDER BY id ASC", [bill.id], (itemErr, items) => {
+            if (itemErr) return res.status(500).json({ error: itemErr.message });
+            let parsedDaily = {};
+            try {
+                if (bill.dailyBreakdown) parsedDaily = JSON.parse(bill.dailyBreakdown);
+            } catch(e) {}
+            res.json({
+                data: {
+                    ...bill,
+                    dailyBreakdown: parsedDaily,
+                    items: items || []
+                }
+            });
+        });
+    });
+});
+
+// Create new laundry bill (as Pending or Paid)
+app.post('/api/laundry/bills', (req, res) => {
+    const {
+        invoiceNo, vendor, date, month, totalQty, totalAmount,
+        status, paidDate, paymentNotes, pdfPath, originalFileName,
+        dailyBreakdown, items
+    } = req.body;
+
+    if (!invoiceNo || !date || totalAmount === undefined) {
+        return res.status(400).json({ error: "Missing required fields: invoiceNo, date, or totalAmount" });
+    }
+
+    // Check for duplicate invoice number
+    db.get("SELECT id, invoiceNo, date, status, totalAmount FROM laundry_bills WHERE LOWER(invoiceNo) = LOWER(?)", [invoiceNo], (checkErr, existing) => {
+        if (checkErr) return res.status(500).json({ error: checkErr.message });
+        if (existing) {
+            return res.status(409).json({
+                error: `Invoice "${invoiceNo}" already exists in the system (Status: ${existing.status}, Amount: LKR ${(existing.totalAmount || 0).toLocaleString()}). Duplicate bills cannot be saved.`
+            });
+        }
+
+        const isPaid = status === 'Paid';
+        const finalPaidDate = isPaid ? (paidDate || date) : null;
+        const dailyStr = typeof dailyBreakdown === 'object' ? JSON.stringify(dailyBreakdown) : (dailyBreakdown || '{}');
+
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+
+        const insertSql = `INSERT INTO laundry_bills (
+            invoiceNo, vendor, date, month, totalQty, totalAmount, status,
+            paidDate, paymentNotes, pdfPath, originalFileName, dailyBreakdown
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+        db.run(insertSql, [
+            invoiceNo, vendor || 'Shiny Laundry', date, month || '',
+            Number(totalQty || 0), Number(totalAmount || 0), isPaid ? 'Paid' : 'Pending',
+            finalPaidDate, paymentNotes || '', pdfPath || '', originalFileName || '', dailyStr
+        ], function(insertErr) {
+            if (insertErr) {
+                db.run("ROLLBACK");
+                return res.status(500).json({ error: insertErr.message });
+            }
+
+            const newBillId = this.lastID;
+            const lineItems = Array.isArray(items) ? items : [];
+
+            if (lineItems.length > 0) {
+                const itemStmt = db.prepare("INSERT INTO laundry_bill_items (billId, description, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?)");
+                lineItems.forEach(it => {
+                    itemStmt.run([
+                        newBillId,
+                        it.description || 'Linen Item',
+                        Number(it.quantity || 0),
+                        Number(it.unitPrice || 0),
+                        Number(it.amount || 0)
+                    ]);
+                });
+                itemStmt.finalize();
+            }
+
+            if (isPaid) {
+                const desc = `Laundry Bill ${invoiceNo} - ${vendor || 'Shiny Laundry'}${month ? ` (${month})` : ''} - ${totalQty || 0} items`;
+                db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Laundry', ?, ?)",
+                    [finalPaidDate, Number(totalAmount), desc], function(expErr) {
+                    if (expErr) {
+                        db.run("ROLLBACK");
+                        return res.status(500).json({ error: expErr.message });
+                    }
+                    const newExpenseId = this.lastID;
+                    db.run("UPDATE laundry_bills SET expenseId = ? WHERE id = ?", [newExpenseId, newBillId], function(upErr) {
+                        if (upErr) {
+                            db.run("ROLLBACK");
+                            return res.status(500).json({ error: upErr.message });
+                        }
+                        db.run("COMMIT");
+                        res.json({
+                            message: "Laundry bill saved and marked as paid",
+                            data: { id: newBillId, expenseId: newExpenseId, status: 'Paid' }
+                        });
+                    });
+                });
+            } else {
+                db.run("COMMIT");
+                res.json({
+                    message: "Laundry bill saved as pending",
+                    data: { id: newBillId, status: 'Pending' }
+                });
+            }
+        });
+    });
+    });
+});
+
+// Mark a pending bill as Paid
+app.post('/api/laundry/bills/:id/pay', (req, res) => {
+    const billId = req.params.id;
+    const { paidDate, paymentNotes } = req.body;
+    const finalPaidDate = paidDate || new Date().toISOString().split('T')[0];
+
+    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+        if (bill.status === 'Paid') return res.status(400).json({ error: "Bill is already marked as paid" });
+
+        const desc = `Laundry Bill ${bill.invoiceNo} - ${bill.vendor || 'Shiny Laundry'}${bill.month ? ` (${bill.month})` : ''} - ${bill.totalQty || 0} items`;
+
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+            db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Laundry', ?, ?)",
+                [finalPaidDate, Number(bill.totalAmount), desc], function(expErr) {
+                if (expErr) {
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ error: expErr.message });
+                }
+                const newExpenseId = this.lastID;
+                const notes = paymentNotes !== undefined ? paymentNotes : (bill.paymentNotes || '');
+                db.run("UPDATE laundry_bills SET status = 'Paid', paidDate = ?, paymentNotes = ?, expenseId = ? WHERE id = ?",
+                    [finalPaidDate, notes, newExpenseId, billId], function(upErr) {
+                    if (upErr) {
+                        db.run("ROLLBACK");
+                        return res.status(500).json({ error: upErr.message });
+                    }
+                    db.run("COMMIT");
+                    res.json({
+                        message: "Bill marked as paid and added to expenses",
+                        data: { id: billId, expenseId: newExpenseId, paidDate: finalPaidDate, status: 'Paid' }
+                    });
+                });
+            });
+        });
+    });
+});
+
+// Revert a paid bill back to Pending
+app.post('/api/laundry/bills/:id/unpay', (req, res) => {
+    const billId = req.params.id;
+    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+            if (bill.expenseId) {
+                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
+            }
+            db.run("UPDATE laundry_bills SET status = 'Pending', paidDate = NULL, expenseId = NULL WHERE id = ?", [billId], function(upErr) {
+                if (upErr) {
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ error: upErr.message });
+                }
+                db.run("COMMIT");
+                res.json({ message: "Bill reverted to pending status", data: { id: billId, status: 'Pending' } });
+            });
+        });
+    });
+});
+
+// Update a laundry bill
+app.put('/api/laundry/bills/:id', (req, res) => {
+    const billId = req.params.id;
+    const {
+        invoiceNo, vendor, date, month, totalQty, totalAmount,
+        status, paidDate, paymentNotes, items, dailyBreakdown
+    } = req.body;
+
+    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, existing) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!existing) return res.status(404).json({ error: "Bill not found" });
+
+        const isPaid = (status || existing.status) === 'Paid';
+        const finalPaidDate = isPaid ? (paidDate || existing.paidDate || date || existing.date) : null;
+        const dailyStr = dailyBreakdown !== undefined 
+            ? (typeof dailyBreakdown === 'object' ? JSON.stringify(dailyBreakdown) : dailyBreakdown)
+            : existing.dailyBreakdown;
+
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+
+            const updateSql = `UPDATE laundry_bills SET
+                invoiceNo = ?, vendor = ?, date = ?, month = ?, totalQty = ?,
+                totalAmount = ?, status = ?, paidDate = ?, paymentNotes = ?, dailyBreakdown = ?
+                WHERE id = ?`;
+
+            db.run(updateSql, [
+                invoiceNo || existing.invoiceNo,
+                vendor || existing.vendor,
+                date || existing.date,
+                month !== undefined ? month : existing.month,
+                Number(totalQty !== undefined ? totalQty : existing.totalQty),
+                Number(totalAmount !== undefined ? totalAmount : existing.totalAmount),
+                isPaid ? 'Paid' : 'Pending',
+                finalPaidDate,
+                paymentNotes !== undefined ? paymentNotes : existing.paymentNotes,
+                dailyStr,
+                billId
+            ], function(upErr) {
+                if (upErr) {
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ error: upErr.message });
+                }
+
+                // If items are provided, replace them
+                if (Array.isArray(items)) {
+                    db.run("DELETE FROM laundry_bill_items WHERE billId = ?", [billId], (delErr) => {
+                        if (!delErr && items.length > 0) {
+                            const itemStmt = db.prepare("INSERT INTO laundry_bill_items (billId, description, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?)");
+                            items.forEach(it => {
+                                itemStmt.run([
+                                    billId,
+                                    it.description || 'Linen Item',
+                                    Number(it.quantity || 0),
+                                    Number(it.unitPrice || 0),
+                                    Number(it.amount || 0)
+                                ]);
+                            });
+                            itemStmt.finalize();
+                        }
+                    });
+                }
+
+                // Sync linked expense if already paid
+                if (existing.expenseId) {
+                    const desc = `Laundry Bill ${invoiceNo || existing.invoiceNo} - ${vendor || existing.vendor}${month ? ` (${month})` : ''} - ${totalQty || existing.totalQty} items`;
+                    db.run("UPDATE expenses SET date = ?, amount = ?, description = ? WHERE id = ?",
+                        [finalPaidDate, Number(totalAmount || existing.totalAmount), desc, existing.expenseId], () => {});
+                }
+
+                db.run("COMMIT");
+                res.json({ message: "Laundry bill updated successfully" });
+            });
+        });
+    });
+});
+
+// Delete a laundry bill
+app.delete('/api/laundry/bills/:id', (req, res) => {
+    const billId = req.params.id;
+    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+            if (bill.expenseId) {
+                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
+            }
+            db.run("DELETE FROM laundry_bill_items WHERE billId = ?", [billId], () => {});
+            db.run("DELETE FROM laundry_bills WHERE id = ?", [billId], function(delErr) {
+                if (delErr) {
+                    db.run("ROLLBACK");
+                    return res.status(500).json({ error: delErr.message });
+                }
+                db.run("COMMIT");
+
+                // Clean up file if present
+                if (bill.pdfPath) {
+                    const filename = path.basename(bill.pdfPath);
+                    const diskFile = path.join(laundryUploadDir, filename);
+                    if (fs.existsSync(diskFile)) {
+                        try { fs.unlinkSync(diskFile); } catch(e) {}
+                    }
+                }
+
+                res.json({ message: "Laundry bill deleted successfully" });
             });
         });
     });

@@ -99,7 +99,8 @@ export default function PendingExpensesLedger({ expenses, onExpenseDeleted, onEx
                                 >
                                     <option value="">All Categories</option>
                                     <option value="Maintenance">Maintenance & Repairs</option>
-                                    <option value="Cleaning">Cleaning / Laundry</option>
+                                    <option value="Laundry">Laundry Service</option>
+                                    <option value="Cleaning">Cleaning & Housekeeping</option>
                                     <option value="Utilities">Utilities</option>
                                     <option value="Salary">Staff Salary</option>
                                     <option value="Supplies">Supplies & Groceries</option>
