@@ -196,14 +196,22 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
             return res.status(400).json({ error: `The following rooms are already booked during these dates: ${conflictRooms}` });
         }
 
+        // Rows are deleted and re-inserted, so carry over fields the edit form doesn't send:
+        // the checkout confirmation (whole group) and each room's channel-sync uid
+        db.all("SELECT roomName, uid, checkedOutAt FROM reservations WHERE groupId = ?", [groupId], (prevErr, previousRows) => {
+        if (prevErr) return res.status(500).json({ error: prevErr.message });
+        const uidByRoom = {};
+        (previousRows || []).forEach(r => { if (r.uid) uidByRoom[r.roomName] = r.uid; });
+        const checkedOutAt = (previousRows || []).map(r => r.checkedOutAt).find(Boolean) || null;
+
         db.run("DELETE FROM reservations WHERE groupId = ?", [groupId], function(delErr) {
             if (delErr) return res.status(500).json({ error: delErr.message });
 
             const sql = `INSERT INTO reservations (
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                 roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
-                usdAmount, conversionRate, breakfastIncluded
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                usdAmount, conversionRate, breakfastIncluded, uid, checkedOutAt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
             const numRooms = roomNames.length;
             const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
@@ -224,13 +232,14 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
                 return insertPromise([
                     guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                     rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId,
-                    splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded)
+                    splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded), uidByRoom[rName] || null, checkedOutAt
                 ]);
             }))
             .then(ids => {
                 res.json({ message: "Group reservation updated successfully", data: { insertedIds: ids } });
             })
             .catch(err => res.status(400).json({ error: err.message }));
+        });
         });
     });
 });
@@ -289,6 +298,70 @@ app.delete('/api/reservations/:id', (req, res) => {
     db.run("DELETE FROM reservations WHERE id = ?", req.params.id, function (err) {
         if (err) return res.status(400).json({ error: err.message });
         res.json({ message: "Reservation deleted", changes: this.changes });
+    });
+});
+
+// Payments for a booking group, as stored on each room row (already split per room).
+// Older bookings may only have advancedAmount, which is turned into a single payment.
+const groupPaymentState = (rows) => {
+    const first = rows[0];
+    let payments = [];
+    try { payments = first.advancedPayments ? JSON.parse(first.advancedPayments) : []; } catch (e) {}
+    if (payments.length === 0 && Number(first.advancedAmount) > 0) {
+        payments = [{ date: first.checkInDate, amount: String(first.advancedAmount) }];
+    }
+    const total = rows.reduce((sum, r) => sum + Number(r.totalAmount || 0), 0);
+    const paid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0) * rows.length;
+    return { payments, total, paid, pending: Math.round((total - paid) * 100) / 100 };
+};
+
+// Confirm a guest's checkout. Any remaining balance must be settled in the same step:
+// amountReceived is recorded as a payment, and checkout is refused while a balance remains.
+app.post('/api/reservations/group/:groupId/checkout', (req, res) => {
+    const groupId = req.params.groupId;
+    const amountReceived = Number(req.body.amountReceived || 0);
+    const paymentDate = req.body.paymentDate || todayKey();
+    const checkoutDate = req.body.checkoutDate || todayKey();
+    if (isNaN(amountReceived) || amountReceived < 0) return res.status(400).json({ error: "Invalid amount received" });
+
+    db.all("SELECT * FROM reservations WHERE groupId = ? OR (id = ? AND (groupId IS NULL OR groupId = ''))", [groupId, groupId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+        if (rows.some(r => r.checkedOutAt)) return res.status(400).json({ error: "This guest has already been checked out." });
+
+        const state = groupPaymentState(rows);
+        const remaining = Math.round((state.pending - amountReceived) * 100) / 100;
+        if (remaining > 0.05) {
+            return res.status(400).json({
+                error: `A balance of LKR ${state.pending.toLocaleString()} is due. Settle the full balance to confirm the checkout (LKR ${remaining.toLocaleString()} still short).`
+            });
+        }
+
+        const payments = [...state.payments];
+        if (amountReceived > 0) payments.push({ date: paymentDate, amount: String(amountReceived / rows.length) });
+        const advancePerRoom = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const ids = rows.map(r => r.id);
+
+        db.run(`UPDATE reservations SET advancedPayments = ?, advancedAmount = ?, checkedOutAt = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+            [JSON.stringify(payments), advancePerRoom, checkoutDate, ...ids], (upErr) => {
+            if (upErr) return res.status(500).json({ error: upErr.message });
+            res.json({
+                message: amountReceived > 0
+                    ? `Payment of LKR ${amountReceived.toLocaleString()} recorded and checkout confirmed`
+                    : "Checkout confirmed",
+                data: { checkedOutAt: checkoutDate }
+            });
+        });
+    });
+});
+
+// Undo a checkout confirmation (payments recorded with it are kept)
+app.delete('/api/reservations/group/:groupId/checkout', (req, res) => {
+    const groupId = req.params.groupId;
+    db.run("UPDATE reservations SET checkedOutAt = NULL WHERE groupId = ? OR (id = ? AND (groupId IS NULL OR groupId = ''))", [groupId, groupId], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (this.changes === 0) return res.status(404).json({ error: "Booking not found" });
+        res.json({ message: "Checkout undone" });
     });
 });
 
@@ -1619,7 +1692,8 @@ const DEFAULT_REMINDER_SETTINGS = {
         booking: { enabled: true, day: 7 }
     },
     dueSoonDays: 3,
-    bonus: { enabled: true }
+    bonus: { enabled: true },
+    checkouts: { enabled: true }
 };
 
 const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows)));
@@ -1637,7 +1711,8 @@ const loadReminderSettings = async () => {
     return {
         bills,
         dueSoonDays: saved.dueSoonDays !== undefined ? saved.dueSoonDays : DEFAULT_REMINDER_SETTINGS.dueSoonDays,
-        bonus: { ...DEFAULT_REMINDER_SETTINGS.bonus, ...(saved.bonus || {}) }
+        bonus: { ...DEFAULT_REMINDER_SETTINGS.bonus, ...(saved.bonus || {}) },
+        checkouts: { ...DEFAULT_REMINDER_SETTINGS.checkouts, ...(saved.checkouts || {}) }
     };
 };
 
@@ -1741,6 +1816,41 @@ const buildNotifications = async () => {
         });
     });
 
+    // 4. Guest checkouts to confirm (with the balance settled). Only checkouts from the day this
+    //    reminder was first used are flagged, so older bookings never flood the list.
+    if (settings.checkouts.enabled) {
+        let checkoutStart = await getSettingAsync('checkoutRemindersStartDate');
+        if (!checkoutStart) {
+            checkoutStart = today;
+            await setSettingAsync('checkoutRemindersStartDate', checkoutStart);
+        }
+        const rows = await dbAll(
+            `SELECT * FROM reservations WHERE checkOutDate >= ? AND checkOutDate <= ?
+             AND (checkedOutAt IS NULL OR checkedOutAt = '') ORDER BY checkOutDate`,
+            [checkoutStart, today]
+        );
+        const groups = {};
+        rows.forEach(r => {
+            const key = r.groupId || String(r.id);
+            (groups[key] = groups[key] || []).push(r);
+        });
+        Object.entries(groups).forEach(([key, groupRows]) => {
+            const first = groupRows[0];
+            const { pending } = groupPaymentState(groupRows);
+            const rooms = groupRows.map(r => r.roomName).join(', ');
+            const isToday = first.checkOutDate === today;
+            items.push({
+                id: `checkout-${key}`,
+                kind: 'checkout',
+                severity: isToday ? 'due' : 'overdue',
+                title: `${isToday ? 'Checkout today' : 'Checkout not confirmed'}: ${first.guestName}`,
+                detail: `${rooms} · ${pending > 0.05 ? `balance LKR ${pending.toLocaleString()} to settle` : 'fully paid'} — confirm the checkout.`,
+                date: first.checkOutDate,
+                link: `/?checkout=${encodeURIComponent(key)}`
+            });
+        });
+    }
+
     // Overdue first, then by date
     const rank = { overdue: 0, due: 1, info: 2 };
     items.sort((a, b) => (rank[a.severity] - rank[b.severity]) || String(a.date).localeCompare(String(b.date)));
@@ -1780,7 +1890,8 @@ app.put('/api/notifications/settings', async (req, res) => {
             return res.status(400).json({ error: "Days before the due date must be between 0 and 30" });
         }
         const bonus = { enabled: body.bonus && body.bonus.enabled !== undefined ? !!body.bonus.enabled : current.bonus.enabled };
-        const next = { bills, dueSoonDays, bonus };
+        const checkouts = { enabled: body.checkouts && body.checkouts.enabled !== undefined ? !!body.checkouts.enabled : current.checkouts.enabled };
+        const next = { bills, dueSoonDays, bonus, checkouts };
         await setSettingAsync('reminderSettings', JSON.stringify(next));
         res.json({ message: "Reminder settings saved", data: next });
     } catch (err) {
@@ -2030,6 +2141,52 @@ setTimeout(async () => {
     }
 }, 5000);
 
+// One-time tidy-up when checkout confirmation was introduced: bookings that had already ended
+// before that day and are fully paid are marked checked out on their own checkout date.
+// Ended bookings with a balance are left alone so they can be settled and checked out properly.
+// Guarded by a settings flag so it never runs again (otherwise it would silently confirm
+// checkouts the user forgot, defeating the checkout reminders).
+const backfillPastCheckouts = async () => {
+    try {
+        if (await getSettingAsync('checkoutBackfillDone')) return;
+        const columns = await dbAll("PRAGMA table_info(reservations)");
+        if (!columns.some(c => c.name === 'checkedOutAt')) return; // migration not applied yet; try next start
+
+        const cutoff = todayKey();
+        const rows = await dbAll(
+            "SELECT * FROM reservations WHERE checkOutDate < ? AND (checkedOutAt IS NULL OR checkedOutAt = '')",
+            [cutoff]
+        );
+        const groups = {};
+        rows.forEach(r => {
+            const key = r.groupId || String(r.id);
+            (groups[key] = groups[key] || []).push(r);
+        });
+
+        let marked = 0;
+        let leftWithBalance = 0;
+        for (const groupRows of Object.values(groups)) {
+            if (groupPaymentState(groupRows).pending > 0.05) {
+                leftWithBalance++;
+                continue;
+            }
+            const ids = groupRows.map(r => r.id);
+            await new Promise((resolve, reject) => db.run(
+                `UPDATE reservations SET checkedOutAt = checkOutDate WHERE id IN (${ids.map(() => '?').join(',')})`,
+                ids, (err) => err ? reject(err) : resolve()
+            ));
+            marked++;
+        }
+
+        await setSettingAsync('checkoutBackfillDone', JSON.stringify({ ranOn: cutoff, marked, leftWithBalance }));
+        console.log(`Checkout backfill: marked ${marked} past fully-paid booking(s) as checked out; ${leftWithBalance} past booking(s) with a balance left for review.`);
+    } catch (err) {
+        console.error('Checkout backfill failed (will retry on next start):', err.message);
+    }
+};
+
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
+    // Give db.js a moment to finish its startup migrations before touching reservations
+    setTimeout(backfillPastCheckouts, 3000);
 });

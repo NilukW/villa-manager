@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Save } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
+import { notifyDataChanged } from '../utils/notifications';
 
 export default function AddBooking() {
     const navigate = useNavigate();
@@ -10,7 +11,9 @@ export default function AddBooking() {
     const state = location.state;
 
     const initialCheckIn = state?.checkInDate || '';
-    const initialCheckOut = state?.checkInDate ? format(addDays(parseISO(state.checkInDate), 1), 'yyyy-MM-dd') : '';
+    // The calendar can pass a check-out date when a range of nights is dragged; default to one night
+    const initialCheckOut = state?.checkOutDate
+        || (state?.checkInDate ? format(addDays(parseISO(state.checkInDate), 1), 'yyyy-MM-dd') : '');
     const initialSelectedRooms = state?.roomName ? [state.roomName] : [];
 
     const [formData, setFormData] = useState({
@@ -179,7 +182,8 @@ export default function AddBooking() {
             if (!res.ok) {
                 setSubmitError(data.error || 'Failed to save booking');
             } else {
-                navigate('/bookings');
+                notifyDataChanged();
+                navigate('/');
             }
         } catch (err) {
             setSubmitError(err.message);
@@ -188,8 +192,12 @@ export default function AddBooking() {
 
     return (
         <div className="animate-slide-up">
-            <div className="page-header">
+            <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', maxWidth: '800px', margin: '0 auto 1.5rem' }}>
                 <h1 className="page-title">Add New Reservation</h1>
+                {/* Submits the form below via its id, so it can sit outside the form */}
+                <button type="submit" form="booking-form" className="btn btn-primary">
+                    <Save size={16} /> Save Reservation
+                </button>
             </div>
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
@@ -202,7 +210,7 @@ export default function AddBooking() {
                         </div>
                     </div>
                 )}
-                <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                <form id="booking-form" onSubmit={handleSubmit} className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                         <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Guest Information</h3>
                     </div>

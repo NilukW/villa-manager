@@ -473,7 +473,7 @@ function UtilityBillsPage({ utilityType }) {
             )}
 
             {/* Section Tabs */}
-            <div style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
+            <div className="tab-bar" style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
                 {[
                     { id: 'dashboard', label: 'Overview', icon: BarChart3 },
                     { id: 'ledger', label: `Bills Ledger (${bills.length})`, icon: FileText },
@@ -722,7 +722,7 @@ function UtilityBillsPage({ utilityType }) {
 
                     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                         <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '750px' }}>
+                            <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '750px' }}>
                                 <thead>
                                     <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                         <th style={{ padding: '1rem' }}>Account / Bill</th>
@@ -753,7 +753,7 @@ function UtilityBillsPage({ utilityType }) {
                                             const isPaid = bill.status === 'Paid';
                                             return (
                                                 <tr key={bill.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.95rem' }}>
-                                                    <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
+                                                    <td className="cell-title" style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                             <TypeIcon size={16} style={{ color: config.color }} />
                                                             {bill.accountNo ? `A/C ${bill.accountNo}` : bill.billNo}
@@ -762,15 +762,15 @@ function UtilityBillsPage({ utilityType }) {
                                                             {[accountLabel(bill) || bill.provider, bill.accountNo && `Ref ${bill.billNo}`].filter(Boolean).join(' • ')}
                                                         </div>
                                                     </td>
-                                                    <td style={{ padding: '1rem', whiteSpace: 'nowrap' }}>{bill.date}</td>
-                                                    <td style={{ padding: '1rem', fontWeight: 500 }}>{bill.month || '-'}</td>
+                                                    <td data-label="Bill date" style={{ padding: '1rem', whiteSpace: 'nowrap' }}>{bill.date}</td>
+                                                    <td data-label="Month" style={{ padding: '1rem', fontWeight: 500 }}>{bill.month || '-'}</td>
                                                     {config.hasMeter && (
-                                                        <td style={{ padding: '1rem', fontWeight: 600 }}>{formatUnits(bill.unitsUsed)}</td>
+                                                        <td data-label="Usage" style={{ padding: '1rem', fontWeight: 600 }}>{formatUnits(bill.unitsUsed)}</td>
                                                     )}
-                                                    <td style={{ padding: '1rem', whiteSpace: 'nowrap', color: isOverdue(bill) ? '#b91c1c' : 'inherit' }}>
+                                                    <td data-label="Due date" style={{ padding: '1rem', whiteSpace: 'nowrap', color: isOverdue(bill) ? '#b91c1c' : 'inherit' }}>
                                                         {bill.dueDate || '-'}
                                                     </td>
-                                                    <td style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
+                                                    <td data-label="Amount" style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
                                                         {(bill.totalAmount || 0).toLocaleString()}
                                                         {!isPaid && Number(bill.previousDue) > 0 && (
                                                             <div style={{ fontSize: '0.75rem', fontWeight: 500, color: '#b91c1c', marginTop: '0.15rem' }} title={`Previous due ${lkr(bill.previousDue)}`}>
@@ -778,7 +778,7 @@ function UtilityBillsPage({ utilityType }) {
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td style={{ padding: '1rem' }}>
+                                                    <td data-label="Status" style={{ padding: '1rem' }}>
                                                         <StatusBadge bill={bill} />
                                                         {isPaid && bill.paidDate && (
                                                             <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', marginTop: '0.2rem' }}>
@@ -786,7 +786,7 @@ function UtilityBillsPage({ utilityType }) {
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td style={{ padding: '1rem', textAlign: 'right' }}>
+                                                    <td className="cell-actions" style={{ padding: '1rem', textAlign: 'right' }}>
                                                         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', alignItems: 'center' }}>
                                                             <button
                                                                 className="btn"
@@ -1123,7 +1123,7 @@ function UtilityBillsPage({ utilityType }) {
 
             {/* MODAL 1: VIEW BILL DETAILS */}
             {viewingBill && (
-                <div style={modalBackdrop}>
+                <div className="modal-backdrop" style={modalBackdrop}>
                     <div className="card animate-slide-up" style={{ width: '100%', maxWidth: '650px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
                         <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8fafc' }}>
                             <div>
@@ -1248,7 +1248,7 @@ function UtilityBillsPage({ utilityType }) {
 
             {/* MODAL 2: CONFIRM PAYMENT */}
             {payingBill && (
-                <div style={modalBackdrop}>
+                <div className="modal-backdrop" style={modalBackdrop}>
                     <div className="card animate-slide-up" style={{ width: '100%', maxWidth: '480px', padding: 0, overflow: 'hidden' }}>
                         <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h3 style={{ margin: 0, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

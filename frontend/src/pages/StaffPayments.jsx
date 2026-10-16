@@ -228,7 +228,7 @@ export default function StaffPayments() {
             {/* Staff balances */}
             <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: '2rem' }}>
                 <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '980px' }}>
+                    <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '980px' }}>
                         <thead>
                             <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                 <th style={{ padding: '1rem' }}>Staff</th>
@@ -256,22 +256,22 @@ export default function StaffPayments() {
                                 const StatusIcon = status.Icon;
                                 return (
                                     <tr key={r.member.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.95rem' }}>
-                                        <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
+                                        <td className="cell-title" style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
                                             {r.member.name}
                                             {!r.member.active && <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', fontWeight: 500 }}>Inactive</div>}
                                         </td>
-                                        <td style={{ padding: '1rem' }}>{lkr(r.salary)}</td>
-                                        <td style={{ padding: '1rem', color: r.bonus > 0 ? '#6d28d9' : 'var(--text-light)' }}>{r.bonus > 0 ? `+ ${lkr(r.bonus)}` : '-'}</td>
-                                        <td style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>{lkr(r.totalPay)}</td>
-                                        <td style={{ padding: '1rem', color: r.advances > 0 ? '#b45309' : 'var(--text-light)' }}>{r.advances > 0 ? `− ${lkr(r.advances)}` : '-'}</td>
-                                        <td style={{ padding: '1rem', color: r.salaryPaid > 0 ? '#15803d' : 'var(--text-light)' }}>{r.salaryPaid > 0 ? `− ${lkr(r.salaryPaid)}` : '-'}</td>
-                                        <td style={{ padding: '1rem', fontWeight: 700, color: r.balance > 0 ? 'var(--text)' : 'var(--text-light)' }}>{lkr(Math.max(0, r.balance))}</td>
-                                        <td style={{ padding: '1rem' }}>
+                                        <td data-label="Salary" style={{ padding: '1rem' }}>{lkr(r.salary)}</td>
+                                        <td data-label="Bonus" style={{ padding: '1rem', color: r.bonus > 0 ? '#6d28d9' : 'var(--text-light)' }}>{r.bonus > 0 ? `+ ${lkr(r.bonus)}` : '-'}</td>
+                                        <td data-label="Total pay" style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>{lkr(r.totalPay)}</td>
+                                        <td data-label="Advances" style={{ padding: '1rem', color: r.advances > 0 ? '#b45309' : 'var(--text-light)' }}>{r.advances > 0 ? `− ${lkr(r.advances)}` : '-'}</td>
+                                        <td data-label="Salary paid" style={{ padding: '1rem', color: r.salaryPaid > 0 ? '#15803d' : 'var(--text-light)' }}>{r.salaryPaid > 0 ? `− ${lkr(r.salaryPaid)}` : '-'}</td>
+                                        <td data-label="Balance" style={{ padding: '1rem', fontWeight: 700, color: r.balance > 0 ? 'var(--text)' : 'var(--text-light)' }}>{lkr(Math.max(0, r.balance))}</td>
+                                        <td data-label="Status" style={{ padding: '1rem' }}>
                                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.25rem 0.6rem', borderRadius: '1rem', fontSize: '0.8rem', fontWeight: 600, backgroundColor: status.bg, color: status.fg }}>
                                                 <StatusIcon size={13} /> {status.text}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '1rem', textAlign: 'right' }}>
+                                        <td className="cell-actions" style={{ padding: '1rem', textAlign: 'right' }}>
                                             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                                                 <button
                                                     className="btn"
@@ -305,7 +305,7 @@ export default function StaffPayments() {
             </h3>
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '640px' }}>
+                    <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '640px' }}>
                         <thead>
                             <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                 <th style={{ padding: '0.85rem 1rem' }}>Date</th>
@@ -324,16 +324,16 @@ export default function StaffPayments() {
                                 const TypeIcon = t.Icon;
                                 return (
                                     <tr key={p.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.92rem' }}>
-                                        <td style={{ padding: '0.85rem 1rem', whiteSpace: 'nowrap' }}>{p.date}</td>
-                                        <td style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>{p.staffName}</td>
-                                        <td style={{ padding: '0.85rem 1rem' }}>
+                                        <td data-label="Date" style={{ padding: '0.85rem 1rem', whiteSpace: 'nowrap' }}>{p.date}</td>
+                                        <td data-label="Staff" style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>{p.staffName}</td>
+                                        <td data-label="Type" style={{ padding: '0.85rem 1rem' }}>
                                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.55rem', borderRadius: '1rem', fontSize: '0.8rem', fontWeight: 600, backgroundColor: t.bg, color: t.fg }}>
                                                 <TypeIcon size={13} /> {t.label}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '0.85rem 1rem', fontWeight: 700 }}>{lkr(p.amount)}</td>
-                                        <td style={{ padding: '0.85rem 1rem', color: 'var(--text-light)' }}>{p.notes || '-'}</td>
-                                        <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
+                                        <td data-label="Amount" style={{ padding: '0.85rem 1rem', fontWeight: 700 }}>{lkr(p.amount)}</td>
+                                        <td data-label="Notes" style={{ padding: '0.85rem 1rem', color: 'var(--text-light)' }}>{p.notes || '-'}</td>
+                                        <td className="cell-actions" style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
                                             {p.bonusId ? (
                                                 <Link to="/staff/bonus" style={{ fontSize: '0.8rem' }} title="Bonus payments are undone from the Staff Bonus page">
                                                     Manage in Staff Bonus
@@ -363,7 +363,7 @@ export default function StaffPayments() {
 
             {/* Advance / salary modal */}
             {paying && (
-                <div style={modalBackdrop}>
+                <div className="modal-backdrop" style={modalBackdrop}>
                     <form onSubmit={handleSavePayment} className="card animate-slide-up" style={{ width: '100%', maxWidth: '460px', padding: 0, overflow: 'hidden' }}>
                         <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h3 style={{ margin: 0, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

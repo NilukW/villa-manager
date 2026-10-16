@@ -182,7 +182,7 @@ export default function StaffManage() {
             {/* Staff grid */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '560px' }}>
+                    <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '560px' }}>
                         <thead>
                             <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                 <th style={{ padding: '1rem' }}>Name</th>
@@ -202,9 +202,9 @@ export default function StaffManage() {
                                 </tr>
                             ) : visibleStaff.map(member => (
                                 <tr key={member.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.95rem', opacity: member.active ? 1 : 0.6 }}>
-                                    <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>{member.name}</td>
-                                    <td style={{ padding: '1rem', fontWeight: 600 }}>{lkr(member.monthlySalary)}</td>
-                                    <td style={{ padding: '1rem' }}>
+                                    <td className="cell-title" style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>{member.name}</td>
+                                    <td data-label="Monthly salary" style={{ padding: '1rem', fontWeight: 600 }}>{lkr(member.monthlySalary)}</td>
+                                    <td data-label="Status" style={{ padding: '1rem' }}>
                                         <span style={{
                                             display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
                                             padding: '0.25rem 0.6rem', borderRadius: '1rem', fontSize: '0.8rem', fontWeight: 600,
@@ -215,7 +215,7 @@ export default function StaffManage() {
                                             {member.active ? 'Active' : 'Inactive'}
                                         </span>
                                     </td>
-                                    <td style={{ padding: '1rem', textAlign: 'right' }}>
+                                    <td className="cell-actions" style={{ padding: '1rem', textAlign: 'right' }}>
                                         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                                             <button
                                                 className="btn"
@@ -254,7 +254,7 @@ export default function StaffManage() {
 
             {/* Add / Edit modal */}
             {editing && (
-                <div style={modalBackdrop}>
+                <div className="modal-backdrop" style={modalBackdrop}>
                     <form onSubmit={handleSave} className="card animate-slide-up" style={{ width: '100%', maxWidth: '440px', padding: 0, overflow: 'hidden' }}>
                         <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h3 style={{ margin: 0, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

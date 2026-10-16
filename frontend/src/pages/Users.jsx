@@ -71,7 +71,7 @@ export default function Users() {
                 <h1 className="page-title">Manage Logins</h1>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
+            <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
                 <div className="card" style={{ height: 'fit-content' }}>
                     <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.75rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <UserPlus size={20} /> Add New User
@@ -95,7 +95,8 @@ export default function Users() {
                         <h3 style={{ margin: 0 }}>Active Users</h3>
                     </div>
                     {loading ? <p style={{ padding: '1.5rem' }}>Loading...</p> : (
-                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                        <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '340px' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-light)', fontSize: '0.9rem' }}>
                                     <th style={{ padding: '1rem 1.25rem' }}>ID</th>
@@ -120,6 +121,7 @@ export default function Users() {
                                 ))}
                             </tbody>
                         </table>
+                        </div>
                     )}
                 </div>
             </div>

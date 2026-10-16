@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Bell, BellRing, Gift, FileWarning, CalendarClock, Settings, CheckCheck } from 'lucide-react';
+import { Bell, BellRing, Gift, FileWarning, CalendarClock, Settings, CheckCheck, LogOut } from 'lucide-react';
 import { useNotifications } from '../utils/notifications';
 
-const KIND_ICONS = { bonus: Gift, 'bill-missing': FileWarning, 'bill-due': CalendarClock };
+const KIND_ICONS = { bonus: Gift, 'bill-missing': FileWarning, 'bill-due': CalendarClock, checkout: LogOut };
 const SEVERITY_STYLES = {
     overdue: { color: '#b91c1c', bg: '#fef2f2', label: 'Overdue' },
     due: { color: '#b45309', bg: '#fffbeb', label: 'Due' },

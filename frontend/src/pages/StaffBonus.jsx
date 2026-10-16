@@ -499,7 +499,7 @@ export default function StaffBonus() {
             <h3 style={{ margin: '0 0 1rem 0', color: 'var(--text)', fontSize: '1.15rem' }}>Bonus History</h3>
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                 <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '760px' }}>
+                    <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '760px' }}>
                         <thead>
                             <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                 <th style={{ padding: '0.85rem 1rem' }}>Profit Month</th>
@@ -516,9 +516,9 @@ export default function StaffBonus() {
                                 <tr><td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-light)' }}>No bonus decisions yet.</td></tr>
                             ) : history.map(b => (
                                 <tr key={b.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.92rem', cursor: 'pointer', backgroundColor: b.month === month ? '#faf5ff' : 'transparent' }} onClick={() => setMonth(b.month)}>
-                                    <td style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>{b.monthLabel}</td>
-                                    <td style={{ padding: '0.85rem 1rem' }}>{lkr(b.netProfit)}</td>
-                                    <td style={{ padding: '0.85rem 1rem' }}>
+                                    <td className="cell-title" style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>{b.monthLabel}</td>
+                                    <td data-label="Net profit" style={{ padding: '0.85rem 1rem' }}>{lkr(b.netProfit)}</td>
+                                    <td data-label="Decision" style={{ padding: '0.85rem 1rem' }}>
                                         <span style={{
                                             display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.55rem', borderRadius: '1rem', fontSize: '0.8rem', fontWeight: 600,
                                             backgroundColor: b.status === 'paid' ? '#dcfce7' : '#f1f5f9', color: b.status === 'paid' ? '#15803d' : 'var(--text-light)'
@@ -527,15 +527,15 @@ export default function StaffBonus() {
                                             {b.status === 'paid' ? `Paid (${b.percentage}%)` : 'Not given'}
                                         </span>
                                     </td>
-                                    <td style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>
+                                    <td data-label="Bonus pool" style={{ padding: '0.85rem 1rem', fontWeight: 600 }}>
                                         {b.status === 'paid' ? lkr(b.pool) : '-'}
                                         {b.status === 'paid' && b.calculatedPool !== null && b.calculatedPool !== undefined && Math.abs(b.calculatedPool - b.pool) > 0.01 * (b.staffCount || 1) && (
                                             <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-light)' }}>calculated {lkr(b.calculatedPool)}</div>
                                         )}
                                     </td>
-                                    <td style={{ padding: '0.85rem 1rem' }}>{b.status === 'paid' ? `${lkr(b.perStaff)} × ${b.staffCount}` : '-'}</td>
-                                    <td style={{ padding: '0.85rem 1rem' }}>{b.status === 'paid' ? prettyDate(b.paidDate) : '-'}</td>
-                                    <td style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
+                                    <td data-label="Per staff" style={{ padding: '0.85rem 1rem' }}>{b.status === 'paid' ? `${lkr(b.perStaff)} × ${b.staffCount}` : '-'}</td>
+                                    <td data-label="Paid on" style={{ padding: '0.85rem 1rem' }}>{b.status === 'paid' ? prettyDate(b.paidDate) : '-'}</td>
+                                    <td className="cell-actions" style={{ padding: '0.85rem 1rem', textAlign: 'right' }}>
                                         <button
                                             className="btn"
                                             onClick={(e) => { e.stopPropagation(); undo(b); }}

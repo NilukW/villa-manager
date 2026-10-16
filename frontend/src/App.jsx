@@ -1,5 +1,6 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { useContext } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useContext, useState, useEffect } from 'react';
+import { Menu } from 'lucide-react';
 import { AuthProvider, AuthContext } from './context/AuthContext';
 import Sidebar from './components/Sidebar';
 import NotificationBell from './components/NotificationBell';
@@ -21,13 +22,24 @@ import StaffBonus from './pages/StaffBonus';
 
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated } = useContext(AuthContext);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+
+  // On phones the sidebar is a drawer: close it whenever the page changes
+  useEffect(() => setMenuOpen(false), [location.pathname]);
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   return (
     <div className="app-layout">
-      <Sidebar />
+      <Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />
+      {menuOpen && <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />}
       <main className="main-content">
         <div className="topbar">
+          <button type="button" className="icon-button mobile-only" onClick={() => setMenuOpen(true)} aria-label="Open menu">
+            <Menu size={20} />
+          </button>
+          <span className="topbar-brand mobile-only">Tiny house</span>
           <NotificationBell />
         </div>
         {children}

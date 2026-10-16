@@ -217,7 +217,7 @@ export default function Finance() {
             </div>
 
             {/* Tab Navigation */}
-            <div style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
+            <div className="tab-bar" style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
                 {['Overview', 'Earnings', 'Expenses', 'Pending Expenses'].map(tab => (
                     <button
                         key={tab}
@@ -251,7 +251,7 @@ export default function Finance() {
                 )}
 
                 {activeTab === 'Expenses' && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
+                    <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
                         <div>
                             <ExpenseForm onExpenseAdded={handleExpenseAdded} />
                         </div>
@@ -265,7 +265,7 @@ export default function Finance() {
                 )}
 
                 {activeTab === 'Pending Expenses' && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
+                    <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '2rem' }}>
                         <div>
                             <ExpenseForm onExpenseAdded={handlePendingExpenseAdded} isPending={true} />
                         </div>

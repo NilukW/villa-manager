@@ -40,6 +40,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
         db.run("ALTER TABLE reservations ADD COLUMN usdAmount REAL", () => {});
         db.run("ALTER TABLE reservations ADD COLUMN conversionRate REAL", () => {});
         db.run("ALTER TABLE reservations ADD COLUMN breakfastIncluded INTEGER DEFAULT 0", () => {});
+        // Date the guest's checkout was confirmed (balance settled); NULL until then
+        db.run("ALTER TABLE reservations ADD COLUMN checkedOutAt TEXT", () => {});
 
         // Create Users Table
         db.run(`CREATE TABLE IF NOT EXISTS users (

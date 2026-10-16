@@ -395,7 +395,7 @@ export default function Laundry() {
             </div>
 
             {/* Top Navigation Tabs */}
-            <div style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
+            <div className="tab-bar" style={{ display: 'flex', gap: '1rem', borderBottom: '2px solid var(--border)', marginBottom: '2rem' }}>
                 {[
                     { id: 'dashboard', label: 'Overview & Usage', icon: BarChart3 },
                     { id: 'ledger', label: `Bills Ledger (${bills.length})`, icon: FileText },
@@ -484,7 +484,7 @@ export default function Laundry() {
                     </div>
 
                     {/* Breakdown by Item & Monthly Trends */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.2fr) minmax(320px, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
+                    <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.2fr) minmax(320px, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
                         {/* Linen Usage Breakdown */}
                         <div className="card" style={{ padding: '1.5rem' }}>
                             <h3 style={{ margin: '0 0 1.25rem 0', color: 'var(--text)', fontSize: '1.15rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -660,7 +660,7 @@ export default function Laundry() {
                     {/* Bills Table */}
                     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                         <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '750px' }}>
+                            <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '750px' }}>
                                 <thead>
                                     <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid var(--border)', color: 'var(--text-light)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                                         <th style={{ padding: '1rem' }}>Invoice No</th>
@@ -691,7 +691,7 @@ export default function Laundry() {
                                             const isPaid = bill.status === 'Paid';
                                             return (
                                                 <tr key={bill.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '0.95rem' }}>
-                                                    <td style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
+                                                    <td className="cell-title" style={{ padding: '1rem', fontWeight: 600, color: 'var(--text)' }}>
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                                             <FileText size={16} className="text-primary" />
                                                             {bill.invoiceNo}
@@ -700,22 +700,22 @@ export default function Laundry() {
                                                             {bill.vendor}
                                                         </div>
                                                     </td>
-                                                    <td style={{ padding: '1rem', whiteSpace: 'nowrap' }}>
+                                                    <td data-label="Date" style={{ padding: '1rem', whiteSpace: 'nowrap' }}>
                                                         {bill.date}
                                                     </td>
-                                                    <td style={{ padding: '1rem', fontWeight: 500 }}>
+                                                    <td data-label="Month" style={{ padding: '1rem', fontWeight: 500 }}>
                                                         {bill.month || '-'}
                                                     </td>
-                                                    <td style={{ padding: '1rem', color: 'var(--text-light)', fontSize: '0.85rem' }}>
+                                                    <td data-label="Items" style={{ padding: '1rem', color: 'var(--text-light)', fontSize: '0.85rem' }}>
                                                         {(bill.items || []).map(it => `${it.quantity} ${it.description}`).join(', ') || '-'}
                                                     </td>
-                                                    <td style={{ padding: '1rem', fontWeight: 600 }}>
+                                                    <td data-label="Total qty" style={{ padding: '1rem', fontWeight: 600 }}>
                                                         {bill.totalQty || 0} pcs
                                                     </td>
-                                                    <td style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
+                                                    <td data-label="Amount" style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
                                                         {(bill.totalAmount || 0).toLocaleString()}
                                                     </td>
-                                                    <td style={{ padding: '1rem' }}>
+                                                    <td data-label="Status" style={{ padding: '1rem' }}>
                                                         {isPaid ? (
                                                             <span style={{ 
                                                                 display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
@@ -741,7 +741,7 @@ export default function Laundry() {
                                                             </div>
                                                         )}
                                                     </td>
-                                                    <td style={{ padding: '1rem', textAlign: 'right' }}>
+                                                    <td className="cell-actions" style={{ padding: '1rem', textAlign: 'right' }}>
                                                         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', alignItems: 'center' }}>
                                                             {/* View Details */}
                                                             <button 
@@ -880,7 +880,7 @@ export default function Laundry() {
                                         Invoice Information
                                     </h3>
 
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                                    <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
                                         <div className="form-group">
                                             <label className="form-label">Invoice Number</label>
                                             <input 
@@ -903,7 +903,7 @@ export default function Laundry() {
                                         </div>
                                     </div>
 
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
+                                    <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
                                         <div className="form-group">
                                             <label className="form-label">Vendor Name</label>
                                             <input 
@@ -1050,7 +1050,7 @@ export default function Laundry() {
 
             {/* MODAL 1: VIEW BILL DETAILS & ORIGINAL PDF */}
             {viewingBill && (
-                <div style={{ 
+                <div className="modal-backdrop" style={{ 
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
                     backgroundColor: 'rgba(15, 23, 42, 0.6)', display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1.5rem' 
@@ -1080,7 +1080,7 @@ export default function Laundry() {
 
                         {/* Modal Content */}
                         <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1 }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginBottom: '1.25rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
                                 <div style={{ padding: '0.75rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', textTransform: 'uppercase' }}>Status</div>
                                     <div style={{ fontWeight: 700, marginTop: '0.2rem', color: viewingBill.status === 'Paid' ? 'var(--success)' : '#b45309' }}>
@@ -1183,7 +1183,7 @@ export default function Laundry() {
 
             {/* MODAL 2: CONFIRM PAYMENT (SETTLE BILL) */}
             {payingBill && (
-                <div style={{ 
+                <div className="modal-backdrop" style={{ 
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
                     backgroundColor: 'rgba(15, 23, 42, 0.6)', display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1.5rem' 

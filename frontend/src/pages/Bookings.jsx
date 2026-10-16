@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { fetchWithAuth } from '../utils/api';
+import { useIsNarrow } from '../utils/useMediaQuery';
 
 export default function Bookings() {
+    const isNarrow = useIsNarrow();
     const [bookings, setBookings] = useState([]);
     const [loading, setLoading] = useState(true);
 
@@ -183,8 +185,8 @@ export default function Bookings() {
     return (
         <div className="animate-slide-up">
             {settlingGroup && (
-                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)', overflowY: 'auto', padding: '2rem 1rem' }}>
-                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', minWidth: '400px', maxWidth: '100%', marginTop: '5vh', marginBottom: '2rem' }}>
+                <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)', overflowY: 'auto', padding: '2rem 1rem' }}>
+                    <div className="animate-slide-up" style={{ padding: isNarrow ? '1.5rem 1.25rem' : '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', width: '100%', maxWidth: '460px', marginTop: isNarrow ? 0 : '5vh', marginBottom: '2rem' }}>
                         <h2 style={{ marginTop: 0, marginBottom: '1rem', color: 'var(--text-dark)' }}>Settle Balance</h2>
                         <div style={{ marginBottom: '1rem', padding: '1rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
@@ -229,8 +231,8 @@ export default function Bookings() {
             )}
             
             {deletingId && (
-                <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-                    <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', fontWeight: 600, border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center', maxWidth: '400px' }}>
+                <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="animate-slide-up" style={{ padding: isNarrow ? '1.5rem 1.25rem' : '2rem 3rem', backgroundColor: 'white', borderRadius: '0.75rem', fontWeight: 600, border: '1px solid var(--border)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center', maxWidth: '400px' }}>
                         <div style={{ fontSize: '3.5rem', lineHeight: 1, marginBottom: '0.5rem' }}>🗑️</div>
                         <span style={{ fontSize: '1.25rem', color: 'var(--text-dark)' }}>Delete this booking?</span>
                         <p style={{ fontSize: '0.9rem', color: 'var(--text-light)', margin: 0, fontWeight: 'normal' }}>This action cannot be undone and will permanently remove the record from your database.</p>
@@ -246,8 +248,83 @@ export default function Bookings() {
                 <button className="btn btn-primary" onClick={downloadCSV}>⭳ Export CSV</button>
             </div>
 
-            <div className="card" style={{ padding: '1rem', overflowX: 'auto' }}>
-                {loading ? <p>Loading bookings...</p> : (
+            {/* Phone: filter panel + one card per booking instead of the wide table */}
+            {isNarrow && (
+                <div className="card" style={{ padding: '0.85rem', marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                    <input type="text" name="guestInfo" placeholder="Search guest or NIC/passport..." className="form-control" value={filters.guestInfo} onChange={handleFilterChange} />
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                        <select name="roomName" className="form-control" value={filters.roomName} onChange={handleFilterChange}>
+                            <option value="">All rooms</option>
+                            <option value="Standard 1">Standard 1</option>
+                            <option value="Standard 2">Standard 2</option>
+                            <option value="Standard 3">Standard 3</option>
+                            <option value="Standard 4">Standard 4</option>
+                            <option value="Family Studio">Family Studio</option>
+                        </select>
+                        <select name="settlementStatus" className="form-control" value={filters.settlementStatus} onChange={handleFilterChange}>
+                            <option value="">All payments</option>
+                            <option value="Settled">Settled</option>
+                            <option value="Unsettled">Unsettled</option>
+                        </select>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem', color: 'var(--text-light)' }}>
+                        <span>{totalItems} booking{totalItems === 1 ? '' : 's'}</span>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <select className="form-control" style={{ padding: '0.35rem', width: 'auto' }} value={`${sortConfig.key}:${sortConfig.direction}`} onChange={e => { const [key, direction] = e.target.value.split(':'); setSortConfig({ key, direction }); setCurrentPage(1); }}>
+                                <option value="checkInDate:asc">Check-in ↑</option>
+                                <option value="checkInDate:desc">Check-in ↓</option>
+                                <option value="guestName:asc">Guest A–Z</option>
+                                <option value="totalAmount:desc">Amount ↓</option>
+                            </select>
+                            <button className="btn" style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-light)' }} onClick={() => setFilters({ guestInfo: '', checkInDate: '', checkOutDate: '', roomName: '', remarks: '', settlementStatus: '' })}>Clear</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div className="card" style={{ padding: isNarrow ? 0 : '1rem', overflowX: 'auto' }}>
+                {loading ? <p style={{ padding: isNarrow ? '1rem' : 0 }}>Loading bookings...</p> : isNarrow ? (
+                    paginatedBookings.length === 0 ? (
+                        <p style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-light)' }}>No bookings found</p>
+                    ) : paginatedBookings.map(book => {
+                        const { paid = 0, pending = 0 } = book;
+                        const settled = pending <= 0.05;
+                        return (
+                            <div key={book.id} className="list-card" style={{ borderLeft: `4px solid ${settled ? 'var(--success)' : paid > 0 ? 'var(--warning)' : 'var(--danger)'}` }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                    <b>{book.guestName}</b>
+                                    {book.bookingSource === 'Booking.com' && (
+                                        <span style={{ backgroundColor: '#003580', color: 'white', fontSize: '0.62rem', padding: '0.1rem 0.35rem', borderRadius: '4px', fontWeight: 'bold' }}>Booking.com</span>
+                                    )}
+                                    {isBreakfast(book.breakfastIncluded) && <span title="Breakfast Included">🍳</span>}
+                                </div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--text-light)', marginTop: '0.2rem' }}>
+                                    {book.roomName} · {new Date(book.checkInDate).toLocaleDateString()} → {new Date(book.checkOutDate).toLocaleDateString()}
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.85rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                                    <span>Total <b>{(book.totalAmount || 0).toLocaleString()}</b></span>
+                                    <span style={{ color: 'var(--success)' }}>Paid {paid.toLocaleString()}</span>
+                                    {!settled && <span style={{ color: '#b45309', fontWeight: 600 }}>Due {pending.toLocaleString()}</span>}
+                                </div>
+                                {book.remarks && <div style={{ fontSize: '0.8rem', color: 'var(--text-light)', marginTop: '0.3rem' }}>📝 {book.remarks}</div>}
+                                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+                                    <Link to={`/edit/${book.groupId || book.id}`} className="btn" style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem', backgroundColor: '#eef2ff', color: 'var(--primary)', textDecoration: 'none', border: '1px solid #c7d2fe' }}>Edit</Link>
+                                    {pending > 0 && (
+                                        <button className="btn" style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem', backgroundColor: '#fef9c3', color: '#854d0e', border: '1px solid #fef08a' }}
+                                            onClick={() => {
+                                                setSettlingGroup({ ...book, pending, groupId: book.groupId || book.id });
+                                                setSettleAmount(pending.toString());
+                                                setSettleDate(new Date().toISOString().split('T')[0]);
+                                            }}>
+                                            ✓ Settle
+                                        </button>
+                                    )}
+                                    <button className="btn" style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem', backgroundColor: '#fef2f2', color: 'var(--danger)', border: '1px solid #fecaca' }} onClick={() => setDeletingId(book.groupId || book.id)}>Delete</button>
+                                </div>
+                            </div>
+                        );
+                    })
+                ) : (
                     <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '1000px' }}>
                         <thead>
                             <tr style={{ borderBottom: '2px solid var(--border)', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none' }}>
@@ -369,7 +446,7 @@ export default function Bookings() {
                     </table>
                 )}
                 {!loading && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', padding: '0.5rem 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: isNarrow ? 0 : '1rem', padding: isNarrow ? '0.75rem 1rem' : '0.5rem 0', flexWrap: 'wrap', gap: '0.75rem', borderTop: isNarrow ? '1px solid var(--border)' : 'none' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-light)' }}>
                             <span>Items per page:</span>
                             <select 

@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, CalendarDays, PlusCircle, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt, PlugZap, Zap, Droplets, Wifi, Hotel, ChevronDown, UserRound, UserCog, Wallet, Gift } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt, PlugZap, Zap, Droplets, Wifi, Hotel, ChevronDown, UserRound, UserCog, Wallet, Gift, X } from 'lucide-react';
 import { useContext, useState, useEffect } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import { usePendingBonuses } from '../utils/bonusReminders';
@@ -60,17 +60,25 @@ function NavGroup({ label, icon: Icon, basePath, links, badges = {}, badgeTitle 
     );
 }
 
-export default function Sidebar() {
+export default function Sidebar({ open = false, onClose }) {
     const { logout, username } = useContext(AuthContext);
     const { pending: pendingBonuses } = usePendingBonuses();
 
+    // In drawer mode, picking a page closes the drawer (group toggles are buttons, not links)
+    const handleNavClick = (e) => {
+        if (onClose && e.target.closest('a')) onClose();
+    };
+
     return (
-        <aside className="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', justifyContent: 'space-between' }}>
+        <aside className={`sidebar ${open ? 'open' : ''}`} style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
             <div>
-                <div className="sidebar-header">
+                <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h2>Tiny house</h2>
+                    <button type="button" className="icon-button mobile-only" onClick={onClose} aria-label="Close menu">
+                        <X size={18} />
+                    </button>
                 </div>
-                <nav className="sidebar-nav">
+                <nav className="sidebar-nav" onClick={handleNavClick}>
                     <NavLink to="/" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} end>
                         <LayoutDashboard size={20} />
                         <span>Dashboard</span>
@@ -78,10 +86,6 @@ export default function Sidebar() {
                     <NavLink to="/bookings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                         <CalendarDays size={20} />
                         <span>All Bookings</span>
-                    </NavLink>
-                    <NavLink to="/add" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                        <PlusCircle size={20} />
-                        <span>Add Booking</span>
                     </NavLink>
                     <NavLink to="/finance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                         <PieChart size={20} />

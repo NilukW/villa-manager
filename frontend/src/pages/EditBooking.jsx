@@ -1,13 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Trash2, LogOut, CheckCircle2, RotateCcw, Save } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
+import { notifyDataChanged } from '../utils/notifications';
+import { groupReservations, lkr } from '../utils/bookings';
+import CheckoutDialog from '../components/CheckoutDialog';
+import ProcessingOverlay from '../components/ProcessingOverlay';
 
 export default function EditBooking() {
     const { id } = useParams();
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
+    const [groupRows, setGroupRows] = useState([]);
+    const [reloadKey, setReloadKey] = useState(0);
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [checkingOut, setCheckingOut] = useState(false);
+    const [busy, setBusy] = useState(null); // 'delete' | 'undo-checkout'
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
         selectedRooms: [], unitPrice: '', totalAmount: '',
@@ -29,6 +38,7 @@ export default function EditBooking() {
         ]).then(([bookingData, roomsData, allResData]) => {
             if (bookingData.data && bookingData.data.length > 0) {
                 const group = bookingData.data;
+                setGroupRows(group);
                 const firstRow = group[0];
                 const sanitizedData = { ...firstRow };
                 Object.keys(sanitizedData).forEach(key => {
@@ -77,7 +87,41 @@ export default function EditBooking() {
             console.error(err);
             setLoading(false);
         });
-    }, [id]);
+    }, [id, reloadKey]);
+
+    const booking = groupRows.length > 0 ? groupReservations(groupRows)[0] : null;
+
+    const handleDelete = async () => {
+        setBusy('delete');
+        try {
+            const res = await fetchWithAuth(`/api/reservations/group/${id}`, { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Failed to delete reservation');
+            notifyDataChanged();
+            navigate('/');
+        } catch (err) {
+            setConfirmingDelete(false);
+            setSubmitError(err.message);
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const handleUndoCheckout = async () => {
+        if (!window.confirm('Undo the checkout confirmation? Payments recorded at checkout are kept.')) return;
+        setBusy('undo-checkout');
+        try {
+            const res = await fetchWithAuth(`/api/reservations/group/${id}/checkout`, { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Failed to undo checkout');
+            notifyDataChanged();
+            setReloadKey(k => k + 1);
+        } catch (err) {
+            setSubmitError(err.message);
+        } finally {
+            setBusy(null);
+        }
+    };
 
     useEffect(() => {
         if (!formData.checkInDate || !formData.checkOutDate) {
@@ -215,7 +259,8 @@ export default function EditBooking() {
             if (!res.ok) {
                 setSubmitError(data.error || 'Failed to update booking');
             } else {
-                navigate('/bookings');
+                notifyDataChanged();
+                navigate('/');
             }
         } catch (err) {
             setSubmitError(err.message);
@@ -226,13 +271,79 @@ export default function EditBooking() {
 
     return (
         <div className="animate-slide-up">
-            <div className="page-header">
-                <h1 className="page-title">Edit Reservation #{id}</h1>
+            <ProcessingOverlay show={!!busy} message={busy === 'delete' ? 'Deleting reservation...' : 'Undoing checkout...'} />
+
+            <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', maxWidth: '800px', margin: '0 auto 1.5rem' }}>
+                <div>
+                    <h1 className="page-title">Edit Reservation</h1>
+                    {booking && (
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            {booking.checkedOutAt ? (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.6rem', borderRadius: '1rem', backgroundColor: '#f1f5f9', color: 'var(--text-light)', fontWeight: 600, fontSize: '0.8rem' }}>
+                                    <CheckCircle2 size={13} /> Checked out {format(parseISO(booking.checkedOutAt), 'd MMM yyyy')}
+                                </span>
+                            ) : booking.pending > 0.05 ? (
+                                <span style={{ color: '#b45309', fontWeight: 600 }}>Balance due {lkr(booking.pending)}</span>
+                            ) : (
+                                <span style={{ color: 'var(--success)', fontWeight: 600 }}>Fully paid</span>
+                            )}
+                        </div>
+                    )}
+                </div>
+                {booking && (
+                    <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                        {/* Submits the form below via its id, so it can sit outside the form */}
+                        <button type="submit" form="booking-form" className="btn btn-primary">
+                            <Save size={16} /> Update
+                        </button>
+                        {booking.checkedOutAt ? (
+                            <button type="button" className="btn" onClick={handleUndoCheckout} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
+                                <RotateCcw size={16} /> Undo Checkout
+                            </button>
+                        ) : (
+                            <button type="button" className="btn" onClick={() => setCheckingOut(true)} style={{ backgroundColor: '#10b981', color: 'white' }}>
+                                <LogOut size={16} /> Check Out
+                            </button>
+                        )}
+                        <button type="button" className="btn" onClick={() => setConfirmingDelete(true)} style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca' }}>
+                            <Trash2 size={16} /> Delete
+                        </button>
+                    </div>
+                )}
             </div>
+
+            {checkingOut && booking && (
+                <CheckoutDialog
+                    booking={booking}
+                    onClose={() => setCheckingOut(false)}
+                    onDone={() => { setCheckingOut(false); setReloadKey(k => k + 1); }}
+                />
+            )}
+
+            {confirmingDelete && booking && (
+                <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, zIndex: 1700, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.6)', padding: '1.5rem' }}>
+                    <div className="card animate-slide-up" style={{ maxWidth: '420px', width: '100%', textAlign: 'center' }}>
+                        <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: '#fee2e2', color: '#b91c1c', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                            <Trash2 size={26} />
+                        </div>
+                        <h3 style={{ margin: '0 0 0.5rem 0' }}>Delete this reservation?</h3>
+                        <p style={{ color: 'var(--text-light)', fontSize: '0.9rem', margin: '0 0 1.5rem 0' }}>
+                            <b style={{ color: 'var(--text)' }}>{booking.guestName}</b> · {booking.rooms.join(', ')}<br />
+                            {format(booking.checkIn, 'd MMM')} → {format(booking.checkOut, 'd MMM yyyy')}. This also removes its payment records and cannot be undone.
+                        </p>
+                        <div style={{ display: 'flex', gap: '0.75rem' }}>
+                            <button type="button" className="btn" onClick={() => setConfirmingDelete(false)} style={{ flex: 1, border: '1px solid var(--border)', backgroundColor: 'white' }}>Cancel</button>
+                            <button type="button" className="btn" onClick={handleDelete} disabled={busy === 'delete'} style={{ flex: 1, backgroundColor: 'var(--danger)', color: 'white', fontWeight: 600 }}>
+                                Yes, Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="card" style={{ maxWidth: '800px', margin: '0 auto' }}>
                 {submitError && (
-                    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                    <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
                         <div className="animate-slide-up" style={{ padding: '2rem 3rem', backgroundColor: 'white', color: '#b91c1c', borderRadius: '0.75rem', fontWeight: 600, border: '2px solid #ef4444', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', textAlign: 'center' }}>
                             <div style={{ fontSize: '3rem', lineHeight: 1 }}>⚠️</div>
                             <span style={{ fontSize: '1.25rem' }}>{submitError}</span>
@@ -240,7 +351,7 @@ export default function EditBooking() {
                         </div>
                     </div>
                 )}
-                <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                <form id="booking-form" onSubmit={handleSubmit} className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                         <h3 style={{ borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Guest Information</h3>
                     </div>
