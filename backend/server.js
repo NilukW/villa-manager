@@ -389,7 +389,7 @@ app.post('/api/reservations/group/:groupId/settle', (req, res) => {
         
         // Add the explicitly split settlement amount to the already split payments list
         const splitSettledAmount = totalAmountSettled / numRooms;
-        const settlementDate = date || new Date().toISOString().split('T')[0];
+        const settlementDate = date || todayKey();
         
         payments.push({
             date: settlementDate,
@@ -463,7 +463,7 @@ app.delete('/api/pending-expenses/:id', (req, res) => {
 
 app.post('/api/pending-expenses/:id/settle', (req, res) => {
     const id = req.params.id;
-    const settlementDate = req.body.date || new Date().toISOString().split('T')[0];
+    const settlementDate = req.body.date || todayKey();
     
     db.get("SELECT * FROM pending_expenses WHERE id = ?", [id], (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -696,7 +696,7 @@ app.post('/api/laundry/bills', (req, res) => {
 app.post('/api/laundry/bills/:id/pay', (req, res) => {
     const billId = req.params.id;
     const { paidDate, paymentNotes } = req.body;
-    const finalPaidDate = paidDate || new Date().toISOString().split('T')[0];
+    const finalPaidDate = paidDate || todayKey();
 
     db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -1086,7 +1086,7 @@ app.post('/api/utilities/bills', (req, res) => {
 app.post('/api/utilities/bills/:id/pay', (req, res) => {
     const billId = req.params.id;
     const { paidDate, paymentNotes } = req.body;
-    const finalPaidDate = paidDate || new Date().toISOString().split('T')[0];
+    const finalPaidDate = paidDate || todayKey();
 
     db.get("SELECT * FROM utility_bills WHERE id = ?", [billId], (err, bill) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -1406,7 +1406,12 @@ const shiftMonthKey = (key, delta) => {
     const d = new Date(Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1 + delta, 1));
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 };
-const todayKey = () => new Date().toISOString().split('T')[0];
+// Today's date in the server's local timezone (set TZ=Asia/Colombo in .env). toISOString() would
+// give the UTC date, which is still "yesterday" in Sri Lanka until 05:30.
+const todayKey = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 // The bonus for a month is decided on the day before the last day of the following month
 // (September's bonus on 30 October).
@@ -2150,7 +2155,10 @@ const backfillPastCheckouts = async () => {
     try {
         if (await getSettingAsync('checkoutBackfillDone')) return;
         const columns = await dbAll("PRAGMA table_info(reservations)");
-        if (!columns.some(c => c.name === 'checkedOutAt')) return; // migration not applied yet; try next start
+        if (!columns.some(c => c.name === 'checkedOutAt')) {
+            console.warn('Checkout backfill skipped: reservations.checkedOutAt column not found; will retry on next start.');
+            return;
+        }
 
         const cutoff = todayKey();
         const rows = await dbAll(
@@ -2187,6 +2195,6 @@ const backfillPastCheckouts = async () => {
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    // Give db.js a moment to finish its startup migrations before touching reservations
-    setTimeout(backfillPastCheckouts, 3000);
+    // Wait for db.js to finish its startup migrations before touching reservations
+    db.ready.then(backfillPastCheckouts);
 });

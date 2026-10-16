@@ -15,6 +15,7 @@ backend/uploads/
 # Database files
 database.sqlite
 database.sqlite-journal
+backend/backups/
 
 # Editor directories and files
 .vscode/*

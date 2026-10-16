@@ -2,11 +2,21 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 const dbPath = path.resolve(__dirname, 'database.sqlite');
+
+// Resolves once the startup schema statements below have all run, so startup jobs that depend on
+// new columns (e.g. the checkout backfill) can wait for them instead of guessing with a timer
+let markReady;
+const ready = new Promise(resolve => { markReady = resolve; });
+
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error('Error opening database', err.message);
     } else {
         console.log('Connected to the SQLite database.');
+
+        // Run the schema statements strictly in order. Without this they run concurrently, and on a
+        // brand-new database an ALTER TABLE can execute before its CREATE TABLE and silently fail.
+        db.serialize(() => {
 
         // Create Reservations Table
         db.run(`CREATE TABLE IF NOT EXISTS reservations (
@@ -224,9 +234,15 @@ const db = new sqlite3.Database(dbPath, (err) => {
             decidedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )`, () => {
             // calculatedPool = percentage × net profit; pool = the amount actually given, which the user may edit
-            db.run("ALTER TABLE staff_bonuses ADD COLUMN calculatedPool REAL", () => {});
+            db.run("ALTER TABLE staff_bonuses ADD COLUMN calculatedPool REAL", () => {
+                // Last statement queued during startup: everything above has been applied
+                markReady();
+            });
+        });
         });
     }
 });
+
+db.ready = ready;
 
 module.exports = db;

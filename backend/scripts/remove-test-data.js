@@ -4,6 +4,7 @@
 // Usage (from backend/): npm run test-data:remove   [or: node scripts/remove-test-data.js [path-to-db]]
 const path = require('path');
 const sqlite3 = require('sqlite3');
+require('./guard')('remove-test-data');
 
 const dbPath = path.resolve(process.argv[2] || path.join(__dirname, '..', 'database.sqlite'));
 console.log(`Database: ${dbPath}`);
