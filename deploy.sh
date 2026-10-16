@@ -16,6 +16,13 @@ sudo npm install -g pm2
 echo "Setting up Backend..."
 cd backend
 npm install
+
+# Generate a random JWT secret once; keep it on re-deploys so logins stay valid
+if ! grep -q '^JWT_SECRET=' .env 2>/dev/null; then
+    echo "JWT_SECRET=$(openssl rand -hex 48)" >> .env
+    chmod 600 .env
+fi
+
 pm2 start server.js --name "villamanager-api"
 pm2 save
 pm2 startup | tail -n 1 | sudo bash

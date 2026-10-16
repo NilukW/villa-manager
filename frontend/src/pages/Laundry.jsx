@@ -114,7 +114,6 @@ export default function Laundry() {
                 ...previewBill,
                 status: asPaid ? 'Paid' : 'Pending',
                 paidDate: asPaid ? (previewBill.date || new Date().toISOString().split('T')[0]) : null,
-                pdfPath: previewFile ? previewFile.pdfPath : '',
                 originalFileName: previewFile ? previewFile.originalName : '',
                 items: previewBill.items || [],
                 dailyBreakdown: previewBill.dailyBreakdown || {}

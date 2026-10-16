@@ -4,38 +4,24 @@ const db = require('./db');
 const { parseICS, generateICS } = require('./ical');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const path = require('path');
-const fs = require('fs');
 const multer = require('multer');
 const { parseLaundryPdf } = require('./laundryParser');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'villamanager_super_secret_key_2026';
-
-// Laundry PDF uploads directory
-const laundryUploadDir = path.join(__dirname, 'uploads', 'laundry');
-if (!fs.existsSync(laundryUploadDir)) {
-    fs.mkdirSync(laundryUploadDir, { recursive: true });
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    console.error('FATAL: JWT_SECRET must be set (at least 32 characters) in backend/.env or the environment.');
+    process.exit(1);
 }
 
-const laundryStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, laundryUploadDir);
-    },
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_\-]/g, '_');
-        cb(null, `${Date.now()}-${base}${ext}`);
-    }
-});
-
+// Laundry PDFs are parsed in memory only and never written to disk
 const uploadLaundry = multer({
-    storage: laundryStorage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 25 * 1024 * 1024 }
 });
 
@@ -73,12 +59,7 @@ app.use('/api/rooms', authenticateToken);
 app.use('/api/reservations', authenticateToken);
 app.use('/api/expenses', authenticateToken);
 app.use('/api/pending-expenses', authenticateToken);
-app.use('/api/laundry', (req, res, next) => {
-    if (req.path.startsWith('/files/')) {
-        return next();
-    }
-    return authenticateToken(req, res, next);
-});
+app.use('/api/laundry', authenticateToken);
 
 // --- Rooms ---
 app.get('/api/rooms', (req, res) => {
@@ -435,36 +416,23 @@ app.post('/api/pending-expenses/:id/settle', (req, res) => {
 
 // --- Laundry Bills & Analytics Management ---
 
-// Serve uploaded laundry invoice PDFs
-app.get('/api/laundry/files/:filename', (req, res) => {
-    const safeName = path.basename(req.params.filename);
-    const filePath = path.join(laundryUploadDir, safeName);
-    if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: "File not found" });
-    }
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
-    res.sendFile(filePath);
-});
-
 // Upload and preview PDF data (with duplicate check)
 app.post('/api/laundry/upload-preview', uploadLaundry.single('file'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: "No PDF file provided" });
     }
     try {
-        const fileBuffer = fs.readFileSync(req.file.path);
-        const parsed = await parseLaundryPdf(fileBuffer);
+        const parsed = await parseLaundryPdf(req.file.buffer);
+        const fileInfo = {
+            originalName: req.file.originalname,
+            size: req.file.size
+        };
 
         // Check if a bill with this invoice number has already been uploaded
         if (parsed.invoiceNo) {
             db.get("SELECT id, invoiceNo, date, status, totalAmount FROM laundry_bills WHERE LOWER(invoiceNo) = LOWER(?)", [parsed.invoiceNo], (dbErr, existing) => {
                 if (dbErr) return res.status(500).json({ error: dbErr.message });
                 if (existing) {
-                    // Delete temporary uploaded file to prevent disk clutter
-                    if (req.file && fs.existsSync(req.file.path)) {
-                        try { fs.unlinkSync(req.file.path); } catch(e) {}
-                    }
                     return res.status(409).json({
                         error: `Invoice "${parsed.invoiceNo}" has already been uploaded on ${existing.date} (Status: ${existing.status}, Amount: LKR ${(existing.totalAmount || 0).toLocaleString()}). Duplicate bills cannot be uploaded.`,
                         duplicate: true,
@@ -475,24 +443,14 @@ app.post('/api/laundry/upload-preview', uploadLaundry.single('file'), async (req
                 res.json({
                     message: "Laundry invoice parsed successfully",
                     data: parsed,
-                    file: {
-                        filename: req.file.filename,
-                        originalName: req.file.originalname,
-                        pdfPath: `/api/laundry/files/${req.file.filename}`,
-                        size: req.file.size
-                    }
+                    file: fileInfo
                 });
             });
         } else {
             res.json({
                 message: "Laundry invoice parsed successfully",
                 data: parsed,
-                file: {
-                    filename: req.file.filename,
-                    originalName: req.file.originalname,
-                    pdfPath: `/api/laundry/files/${req.file.filename}`,
-                    size: req.file.size
-                }
+                file: fileInfo
             });
         }
     } catch (err) {
@@ -811,16 +769,6 @@ app.delete('/api/laundry/bills/:id', (req, res) => {
                     return res.status(500).json({ error: delErr.message });
                 }
                 db.run("COMMIT");
-
-                // Clean up file if present
-                if (bill.pdfPath) {
-                    const filename = path.basename(bill.pdfPath);
-                    const diskFile = path.join(laundryUploadDir, filename);
-                    if (fs.existsSync(diskFile)) {
-                        try { fs.unlinkSync(diskFile); } catch(e) {}
-                    }
-                }
-
                 res.json({ message: "Laundry bill deleted successfully" });
             });
         });
