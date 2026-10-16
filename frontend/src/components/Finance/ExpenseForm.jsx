@@ -68,6 +68,7 @@ export default function ExpenseForm({ onExpenseAdded, isPending = false }) {
                         <option value="Laundry">Laundry Service</option>
                         <option value="Cleaning">Cleaning & Housekeeping</option>
                         <option value="Utilities">Utilities (Water, Power, Internet)</option>
+                        <option value="Commission">OTA Commission (Booking.com)</option>
                         <option value="Salary">Staff Salary</option>
                         <option value="Supplies">Supplies & Groceries</option>
                         <option value="Other">Other Category</option>

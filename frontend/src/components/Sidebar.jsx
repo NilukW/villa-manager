@@ -1,10 +1,68 @@
-import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, CalendarDays, PlusCircle, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt } from 'lucide-react';
-import { useContext } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { LayoutDashboard, CalendarDays, PlusCircle, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt, PlugZap, Zap, Droplets, Wifi, Hotel, ChevronDown, UserRound, UserCog, Wallet, Gift } from 'lucide-react';
+import { useContext, useState, useEffect } from 'react';
 import { AuthContext } from '../context/AuthContext';
+import { usePendingBonuses } from '../utils/bonusReminders';
+
+const UTILITY_LINKS = [
+    { to: '/utilities/laundry', label: 'Laundry', icon: Shirt },
+    { to: '/utilities/electricity', label: 'Electricity', icon: Zap },
+    { to: '/utilities/water', label: 'Water', icon: Droplets },
+    { to: '/utilities/telecom', label: 'Telecom', icon: Wifi },
+    { to: '/utilities/booking', label: 'Booking.com', icon: Hotel }
+];
+
+const STAFF_LINKS = [
+    { to: '/staff/manage', label: 'Manage Staff', icon: UserCog },
+    { to: '/staff/payments', label: 'Salaries & Advances', icon: Wallet },
+    { to: '/staff/bonus', label: 'Staff Bonus', icon: Gift }
+];
+
+const Badge = ({ count, title }) => count > 0 ? <span className="nav-badge" title={title}>{count}</span> : null;
+
+// Collapsible sidebar section; opens automatically while one of its pages is active.
+// badges maps a link's path to a count shown beside it (and summed on the group header).
+function NavGroup({ label, icon: Icon, basePath, links, badges = {}, badgeTitle }) {
+    const location = useLocation();
+    const inGroup = location.pathname.startsWith(basePath);
+    const [open, setOpen] = useState(inGroup);
+    const groupCount = Object.values(badges).reduce((a, b) => a + b, 0);
+
+    useEffect(() => {
+        if (inGroup) setOpen(true);
+    }, [inGroup]);
+
+    return (
+        <>
+            <button
+                type="button"
+                className={`nav-item nav-group-toggle ${inGroup ? 'active' : ''}`}
+                onClick={() => setOpen(o => !o)}
+                aria-expanded={open}
+            >
+                <Icon size={20} />
+                <span>{label}</span>
+                {!open && <Badge count={groupCount} title={badgeTitle} />}
+                <ChevronDown size={16} className={`nav-group-chevron ${open ? 'open' : ''}`} />
+            </button>
+            {open && (
+                <div className="nav-submenu">
+                    {links.map(({ to, label: linkLabel, icon: LinkIcon }) => (
+                        <NavLink key={to} to={to} className={({ isActive }) => `nav-item nav-subitem ${isActive ? 'active' : ''}`}>
+                            <LinkIcon size={17} />
+                            <span>{linkLabel}</span>
+                            <Badge count={badges[to] || 0} title={badgeTitle} />
+                        </NavLink>
+                    ))}
+                </div>
+            )}
+        </>
+    );
+}
 
 export default function Sidebar() {
     const { logout, username } = useContext(AuthContext);
+    const { pending: pendingBonuses } = usePendingBonuses();
 
     return (
         <aside className="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100vh', justifyContent: 'space-between' }}>
@@ -29,10 +87,17 @@ export default function Sidebar() {
                         <PieChart size={20} />
                         <span>Financials</span>
                     </NavLink>
-                    <NavLink to="/laundry" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                        <Shirt size={20} />
-                        <span>Laundry Bills</span>
-                    </NavLink>
+
+                    <NavGroup label="Utility Bills" icon={PlugZap} basePath="/utilities" links={UTILITY_LINKS} />
+                    <NavGroup
+                        label="Staff"
+                        icon={UserRound}
+                        basePath="/staff"
+                        links={STAFF_LINKS}
+                        badges={{ '/staff/bonus': pendingBonuses.length }}
+                        badgeTitle="Staff bonus decision needed"
+                    />
+
                     <NavLink to="/analytics" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                         <BarChart3 size={20} />
                         <span>Analytics</span>

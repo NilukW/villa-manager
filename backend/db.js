@@ -120,8 +120,14 @@ const db = new sqlite3.Database(dbPath, (err) => {
             pdfPath TEXT,
             originalFileName TEXT,
             dailyBreakdown TEXT,
+            fileHash TEXT,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
+        )`, () => {
+            // SHA-256 of the uploaded PDF, so the same file can't be saved twice (added after first release)
+            db.run("ALTER TABLE laundry_bills ADD COLUMN fileHash TEXT", () => {
+                db.run("CREATE INDEX IF NOT EXISTS idx_laundry_bills_filehash ON laundry_bills (fileHash)", () => {});
+            });
+        });
 
         db.run(`CREATE TABLE IF NOT EXISTS laundry_bill_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +140,90 @@ const db = new sqlite3.Database(dbPath, (err) => {
         )`);
 
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_laundry_bills_invoice ON laundry_bills (invoiceNo COLLATE NOCASE)", () => {});
+
+        // Utility Bills (electricity, water, telecom) share one table, keyed by type
+        db.run(`CREATE TABLE IF NOT EXISTS utility_bills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            billNo TEXT NOT NULL,
+            provider TEXT,
+            accountNo TEXT,
+            tariff TEXT,
+            premises TEXT,
+            date TEXT NOT NULL,
+            month TEXT,
+            periodFrom TEXT,
+            periodTo TEXT,
+            dueDate TEXT,
+            previousReading REAL,
+            currentReading REAL,
+            unitsUsed REAL,
+            totalAmount REAL NOT NULL,
+            charges TEXT,
+            status TEXT DEFAULT 'Pending',
+            paidDate TEXT,
+            paymentNotes TEXT,
+            expenseId INTEGER,
+            originalFileName TEXT,
+            fileHash TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`, () => {
+            // SHA-256 of the uploaded PDF, so the same file can't be saved twice (added after first release)
+            db.run("ALTER TABLE utility_bills ADD COLUMN fileHash TEXT", () => {
+                db.run("CREATE INDEX IF NOT EXISTS idx_utility_bills_filehash ON utility_bills (fileHash)", () => {});
+            });
+        });
+
+        db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_utility_bills_type_billno ON utility_bills (type, billNo COLLATE NOCASE)", () => {});
+
+        // Staff & salary payments
+        db.run(`CREATE TABLE IF NOT EXISTS staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            monthlySalary REAL NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // One row per advance or salary payment; month is the salary month (YYYY-MM) it counts against.
+        // salaryForMonth snapshots the monthly salary at payment time so later raises don't rewrite past balances.
+        db.run(`CREATE TABLE IF NOT EXISTS staff_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            staffId INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            month TEXT NOT NULL,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            salaryForMonth REAL,
+            notes TEXT,
+            expenseId INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (staffId) REFERENCES staff (id)
+        )`, () => {
+            // Links a 'bonus' payment row to its staff_bonuses decision (added after first release)
+            db.run("ALTER TABLE staff_payments ADD COLUMN bonusId INTEGER", () => {});
+        });
+
+        // One decision per profit month: the bonus was either paid out or deliberately skipped
+        db.run(`CREATE TABLE IF NOT EXISTS staff_bonuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            month TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL,
+            revenue REAL,
+            expenses REAL,
+            netProfit REAL,
+            percentage REAL,
+            calculatedPool REAL,
+            pool REAL,
+            staffCount INTEGER,
+            perStaff REAL,
+            paidDate TEXT,
+            notes TEXT,
+            decidedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`, () => {
+            // calculatedPool = percentage × net profit; pool = the amount actually given, which the user may edit
+            db.run("ALTER TABLE staff_bonuses ADD COLUMN calculatedPool REAL", () => {});
+        });
     }
 });
 

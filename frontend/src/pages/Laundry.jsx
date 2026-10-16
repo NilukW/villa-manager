@@ -6,6 +6,8 @@ import {
     BarChart3, RefreshCw, X, ExternalLink
 } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
+import ProcessingOverlay, { ButtonSpinner } from '../components/ProcessingOverlay';
+import { notifyDataChanged } from '../utils/notifications';
 
 export default function Laundry() {
     const [bills, setBills] = useState([]);
@@ -23,6 +25,7 @@ export default function Laundry() {
     const [previewBill, setPreviewBill] = useState(null); // Extracted data from upload
     const [previewFile, setPreviewFile] = useState(null); // File metadata { filename, pdfPath, ... }
     const [isSaving, setIsSaving] = useState(false);
+    const [savingAs, setSavingAs] = useState(null); // 'pending' | 'paid' — which save button is in progress
 
     // Modal states
     const [viewingBill, setViewingBill] = useState(null);
@@ -41,6 +44,8 @@ export default function Laundry() {
             if (!res.ok) throw new Error('Failed to load laundry bills');
             const data = await res.json();
             setBills(data.data || []);
+            // Bills changed (uploaded, paid, deleted...) — let notifications re-check
+            notifyDataChanged();
         } catch (err) {
             console.error('Error fetching bills:', err);
         } finally {
@@ -97,6 +102,7 @@ export default function Laundry() {
 
     // Save Bill (either as Pending or Paid)
     const handleSaveBill = async (asPaid = false) => {
+        if (isSaving) return;
         if (!previewBill || !previewBill.invoiceNo || !previewBill.date) {
             alert('Please verify invoice number and date before saving.');
             return;
@@ -109,12 +115,14 @@ export default function Laundry() {
         }
 
         setIsSaving(true);
+        setSavingAs(asPaid ? 'paid' : 'pending');
         try {
             const payload = {
                 ...previewBill,
                 status: asPaid ? 'Paid' : 'Pending',
                 paidDate: asPaid ? (previewBill.date || new Date().toISOString().split('T')[0]) : null,
                 originalFileName: previewFile ? previewFile.originalName : '',
+                fileHash: previewFile ? previewFile.hash : null,
                 items: previewBill.items || [],
                 dailyBreakdown: previewBill.dailyBreakdown || {}
             };
@@ -138,12 +146,13 @@ export default function Laundry() {
             alert('Error: ' + err.message);
         } finally {
             setIsSaving(false);
+            setSavingAs(null);
         }
     };
 
     // Settle / Mark Bill as Paid
     const handleConfirmPayment = async () => {
-        if (!payingBill) return;
+        if (!payingBill || isPaying) return;
         setIsPaying(true);
         try {
             const res = await fetchWithAuth(`/api/laundry/bills/${payingBill.id}/pay`, {
@@ -348,6 +357,17 @@ export default function Laundry() {
 
     return (
         <div className="animate-slide-up" style={{ paddingBottom: '3rem' }}>
+            <ProcessingOverlay
+                show={isUploading || isSaving || isPaying}
+                message={
+                    isUploading ? 'Reading laundry invoice...'
+                        : isPaying ? 'Recording payment...'
+                        : savingAs === 'paid' ? 'Saving bill & posting expense...'
+                        : 'Saving bill...'
+                }
+                detail={isUploading ? 'Extracting items and checking for duplicates.' : 'Please wait, this can take a few seconds.'}
+            />
+
             {/* Page Header */}
             <div className="page-header" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
                 <div>
@@ -818,7 +838,7 @@ export default function Laundry() {
                                 className="btn btn-primary"
                                 style={{ padding: '0.75rem 1.75rem', cursor: 'pointer', fontSize: '1rem' }}
                             >
-                                {isUploading ? 'Parsing Invoice PDF...' : 'Browse PDF File'}
+                                {isUploading ? <><ButtonSpinner /> Reading Invoice PDF...</> : 'Browse PDF File'}
                             </label>
 
                             {uploadError && (
@@ -1007,8 +1027,8 @@ export default function Laundry() {
                                             onClick={() => handleSaveBill(false)}
                                             style={{ flex: 1, backgroundColor: '#f59e0b', color: 'white', padding: '0.75rem', fontWeight: 600 }}
                                         >
-                                            <Clock size={18} />
-                                            Save as Pending Bill
+                                            {savingAs === 'pending' ? <ButtonSpinner /> : <Clock size={18} />}
+                                            {savingAs === 'pending' ? 'Saving...' : 'Save as Pending Bill'}
                                         </button>
 
                                         <button 
@@ -1017,8 +1037,8 @@ export default function Laundry() {
                                             onClick={() => handleSaveBill(true)}
                                             style={{ flex: 1, backgroundColor: '#10b981', color: 'white', padding: '0.75rem', fontWeight: 600 }}
                                         >
-                                            <CheckCircle2 size={18} />
-                                            Save & Mark as Paid
+                                            {savingAs === 'paid' ? <ButtonSpinner /> : <CheckCircle2 size={18} />}
+                                            {savingAs === 'paid' ? 'Saving & Posting Expense...' : 'Save & Mark as Paid'}
                                         </button>
                                     </div>
                                 </div>
@@ -1227,7 +1247,7 @@ export default function Laundry() {
                                 disabled={isPaying}
                                 style={{ backgroundColor: '#10b981', color: 'white', fontWeight: 600 }}
                             >
-                                {isPaying ? 'Processing...' : 'Confirm Payment & Post Expense'}
+                                {isPaying ? <><ButtonSpinner /> Processing...</> : 'Confirm Payment & Post Expense'}
                             </button>
                         </div>
                     </div>

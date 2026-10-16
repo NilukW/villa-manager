@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { addDays, format, parseISO, startOfDay } from 'date-fns';
 import { Link, useNavigate } from 'react-router-dom';
-import { Maximize, Minimize } from 'lucide-react';
+import { Maximize, Minimize, Gift, ArrowRight } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
+import { usePendingBonuses } from '../utils/bonusReminders';
 
 export default function Dashboard() {
     const navigate = useNavigate();
+    const { pending: pendingBonuses } = usePendingBonuses();
     const [rooms, setRooms] = useState([]);
     const [reservations, setReservations] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -78,6 +80,25 @@ export default function Dashboard() {
             {!isFullScreen && (
                 <div className="page-header">
                     <h1 className="page-title">Dashboard</h1>
+                </div>
+            )}
+
+            {!isFullScreen && pendingBonuses.length > 0 && (
+                <div style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', backgroundColor: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 'var(--radius)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <Gift size={24} style={{ color: '#7c3aed', flexShrink: 0 }} />
+                        <div>
+                            <div style={{ fontWeight: 700, color: '#5b21b6' }}>
+                                Staff bonus decision needed: {pendingBonuses.map(p => p.monthLabel).join(', ')}
+                            </div>
+                            <div style={{ fontSize: '0.85rem', color: '#6d28d9' }}>
+                                Review the net profit and choose whether to give the staff bonus.
+                            </div>
+                        </div>
+                    </div>
+                    <Link to="/staff/bonus" className="btn" style={{ backgroundColor: '#7c3aed', color: 'white', textDecoration: 'none' }}>
+                        Review Bonus <ArrowRight size={16} />
+                    </Link>
                 </div>
             )}
 
