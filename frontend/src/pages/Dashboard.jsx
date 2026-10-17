@@ -3,12 +3,12 @@ import { createPortal } from 'react-dom';
 import { addDays, format, parseISO, startOfDay, differenceInDays, isSameDay } from 'date-fns';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-    Maximize, Minimize, ChevronLeft, ChevronRight, LogIn, LogOut, BedDouble, Percent,
-    Phone, MessageCircle, Pencil, CheckCircle2, Plus
+    Maximize, Minimize, ChevronLeft, ChevronRight, LogIn, LogOut, BedDouble,
+    Phone, MessageCircle, Pencil, CheckCircle2, Plus, HandCoins
 } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 import { groupReservations, STATUS_STYLES, whatsappLink, lkr, shortDate } from '../utils/bookings';
-import CheckoutDialog from '../components/CheckoutDialog';
+import SettleDialog from '../components/SettleDialog';
 import { useIsNarrow } from '../utils/useMediaQuery';
 
 // Day column width per view length, so short ranges are roomy and long ones still fit
@@ -25,6 +25,14 @@ function StatusPill({ status }) {
     return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.15rem 0.55rem', borderRadius: '1rem', fontSize: '0.75rem', fontWeight: 600, color: 'white', backgroundColor: s.color }}>
             {s.label}
+        </span>
+    );
+}
+
+function UpcomingPill({ color }) {
+    return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', padding: '0.15rem 0.55rem', borderRadius: '1rem', fontSize: '0.75rem', fontWeight: 600, color: 'white', backgroundColor: color }}>
+            Upcoming
         </span>
     );
 }
@@ -48,12 +56,11 @@ function ContactButtons({ phone, compact }) {
 }
 
 // Floating details card shown while hovering a booking bar
-function HoverCard({ booking, rect, today, onEnter, onLeave, onEdit, onCheckout }) {
+function HoverCard({ booking, rect, onEnter, onLeave, onEdit, onSettle }) {
     const width = 320;
     const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
     const below = rect.bottom + 8;
     const placeAbove = below + 260 > window.innerHeight && rect.top > 280;
-    const canCheckOut = !booking.checkedOutAt && booking.checkIn <= today;
 
     return createPortal(
         <div
@@ -64,7 +71,10 @@ function HoverCard({ booking, rect, today, onEnter, onLeave, onEdit, onCheckout 
         >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
                 <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: '1rem' }}>{booking.guestName}</div>
-                <StatusPill status={booking.status} />
+                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {booking.upcoming && <UpcomingPill color={booking.color} />}
+                    <StatusPill status={booking.status} />
+                </div>
             </div>
             <div style={{ fontSize: '0.85rem', color: 'var(--text-light)', marginTop: '0.25rem' }}>
                 {booking.rooms.join(', ')} · {booking.bookingSource}{booking.breakfast ? ' · 🍳 Breakfast' : ''}
@@ -89,9 +99,9 @@ function HoverCard({ booking, rect, today, onEnter, onLeave, onEdit, onCheckout 
                 <button className="btn btn-primary" style={{ padding: '0.4rem 0.7rem', fontSize: '0.8rem' }} onClick={onEdit}>
                     <Pencil size={14} /> Edit
                 </button>
-                {canCheckOut && (
-                    <button className="btn" style={{ padding: '0.4rem 0.7rem', fontSize: '0.8rem', backgroundColor: '#10b981', color: 'white' }} onClick={onCheckout}>
-                        <LogOut size={14} /> Check out
+                {booking.pending > 0.05 && (
+                    <button className="btn" style={{ padding: '0.4rem 0.7rem', fontSize: '0.8rem', backgroundColor: '#10b981', color: 'white' }} onClick={onSettle}>
+                        <HandCoins size={14} /> Settle
                     </button>
                 )}
                 <ContactButtons phone={booking.phoneNo} />
@@ -133,7 +143,7 @@ export default function Dashboard() {
 
     const [hover, setHover] = useState(null); // { booking, rect }
     const hoverTimer = useRef(null);
-    const [checkoutBooking, setCheckoutBooking] = useState(null);
+    const [settleBooking, setSettleBooking] = useState(null);
     const [drag, setDrag] = useState(null); // { room, start, end } as day indices
 
     const loadData = useCallback(() => {
@@ -155,29 +165,29 @@ export default function Dashboard() {
 
     const bookings = useMemo(() => groupReservations(reservations), [reservations]);
 
-    // Notification links open the checkout dialog via ?checkout=<booking key>
+    // Notification links open the settle dialog via ?settle=<booking key>
     useEffect(() => {
-        const key = searchParams.get('checkout');
+        const key = searchParams.get('settle');
         if (!key || loading) return;
         const target = bookings.find(b => b.key === key);
-        if (target && !target.checkedOutAt) setCheckoutBooking(target);
+        if (target && target.pending > 0.05) setSettleBooking(target);
         setSearchParams({}, { replace: true });
     }, [searchParams, bookings, loading, setSearchParams]);
 
     // --- Today at a glance ---
     const arrivals = bookings.filter(b => isSameDay(b.checkIn, today));
     const departures = bookings.filter(b => isSameDay(b.checkOut, today));
-    const inHouse = bookings.filter(b => b.checkIn <= today && b.checkOut > today && !b.checkedOutAt);
+    const inHouse = bookings.filter(b => b.checkIn <= today && b.checkOut > today);
     const roomsTonight = inHouse.reduce((n, b) => n + b.rooms.length, 0);
-    const occupancy7 = useMemo(() => {
-        if (rooms.length === 0) return 0;
-        let nights = 0;
-        for (let i = 0; i < 7; i++) {
-            const d = addDays(today, i);
-            bookings.forEach(b => { if (b.checkIn <= d && b.checkOut > d) nights += b.rooms.length; });
-        }
-        return Math.round((nights / (rooms.length * 7)) * 100);
-    }, [bookings, rooms.length, today.getTime()]);
+    // Guests who have checked in (staying or already left) and still owe money. Order: guests who have
+    // already left first, then nothing-paid (red) before part-paid, then longest outstanding.
+    const balancesDue = bookings
+        .filter(b => b.checkIn <= today && b.pending > 0.05)
+        .sort((a, b) =>
+            (Number(b.ended) - Number(a.ended)) ||
+            (Number(b.status === 'unpaid') - Number(a.status === 'unpaid')) ||
+            (a.checkOut - b.checkOut));
+    const totalDue = balancesDue.reduce((s, b) => s + b.pending, 0);
 
     // Nights occupied per room within the view (day index → booking), used for clicks, drag and occupancy
     const occupied = useMemo(() => {
@@ -262,10 +272,15 @@ export default function Dashboard() {
         return () => document.removeEventListener('fullscreenchange', onChange);
     }, []);
 
-    const afterCheckout = () => {
-        setCheckoutBooking(null);
+    const afterSettle = () => {
+        setSettleBooking(null);
         loadData();
     };
+
+    // Settle button for the today cards, or a paid tick when nothing is owed
+    const settleAction = (b) => b.pending > 0.05
+        ? <span role="button" className="glance-action" onClick={(e) => { e.stopPropagation(); setSettleBooking(b); }} title={`${lkr(b.pending)} due`}>Settle</span>
+        : <span style={{ fontSize: '0.75rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: '0.2rem', whiteSpace: 'nowrap' }}><CheckCircle2 size={13} /> Paid</span>;
 
     // Month labels spanning their days
     const monthSegments = [];
@@ -278,7 +293,7 @@ export default function Dashboard() {
 
     const bookingLine = (b, extra) => (
         <button key={b.key} className="glance-item" onClick={() => openEdit(b)} title="Open booking">
-            <span className="glance-dot" style={{ backgroundColor: STATUS_STYLES[b.status].color }} />
+            <span className="glance-dot" style={{ backgroundColor: b.color }} />
             <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 <b>{b.guestName}</b> <span style={{ color: 'var(--text-light)' }}>· {b.rooms.join(', ')}</span>
             </span>
@@ -289,44 +304,39 @@ export default function Dashboard() {
     const summary = (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
             <SummaryCard icon={LogIn} label="Arriving today" value={arrivals.length} color="#2563eb">
-                {arrivals.length === 0 ? <span className="glance-empty">No arrivals today</span> : arrivals.map(b => bookingLine(b,
-                    b.pending > 0.05 ? <span style={{ fontSize: '0.75rem', color: '#b45309', whiteSpace: 'nowrap' }}>{lkr(b.pending)} due</span> : null))}
+                {arrivals.length === 0 ? <span className="glance-empty">No arrivals today</span> : arrivals.map(b => bookingLine(b, settleAction(b)))}
             </SummaryCard>
             <SummaryCard icon={LogOut} label="Leaving today" value={departures.length} color="#10b981">
-                {departures.length === 0 ? <span className="glance-empty">No checkouts today</span> : departures.map(b => bookingLine(b,
-                    b.checkedOutAt
-                        ? <span style={{ fontSize: '0.75rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: '0.2rem', whiteSpace: 'nowrap' }}><CheckCircle2 size={13} /> Done</span>
-                        : <span
-                            role="button"
-                            className="glance-action"
-                            onClick={(e) => { e.stopPropagation(); setCheckoutBooking(b); }}
-                        >Check out</span>))}
+                {departures.length === 0 ? <span className="glance-empty">No checkouts today</span> : departures.map(b => bookingLine(b, settleAction(b)))}
             </SummaryCard>
             <SummaryCard icon={BedDouble} label="In-house tonight" value={`${roomsTonight}/${rooms.length}`} color="#7c3aed">
                 {inHouse.length === 0 ? <span className="glance-empty">No guests staying tonight</span> : inHouse.slice(0, 4).map(b => bookingLine(b,
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-light)', whiteSpace: 'nowrap' }}>until {format(b.checkOut, 'd MMM')}</span>))}
                 {inHouse.length > 4 && <span className="glance-empty">+{inHouse.length - 4} more</span>}
             </SummaryCard>
-            <SummaryCard icon={Percent} label="Occupancy · next 7 days" value={`${occupancy7}%`} color="#f59e0b">
-                <div style={{ display: 'flex', gap: '3px', alignItems: 'flex-end', height: '42px' }}>
-                    {Array.from({ length: 7 }).map((_, i) => {
-                        const d = addDays(today, i);
-                        const n = bookings.reduce((s, b) => s + (b.checkIn <= d && b.checkOut > d ? b.rooms.length : 0), 0);
-                        const pct = rooms.length ? n / rooms.length : 0;
-                        return (
-                            <div key={i} style={{ flex: 1, textAlign: 'center' }} title={`${format(d, 'EEE d MMM')}: ${n}/${rooms.length} rooms`}>
-                                <div style={{ height: `${Math.max(4, pct * 30)}px`, backgroundColor: pct >= 1 ? '#16a34a' : '#fbbf24', borderRadius: '3px' }} />
-                                <div style={{ fontSize: '0.65rem', color: 'var(--text-light)' }}>{format(d, 'EEEEE')}</div>
-                            </div>
-                        );
-                    })}
-                </div>
+            <SummaryCard icon={HandCoins} label="Balance due" value={balancesDue.length > 0 ? lkr(totalDue) : '0'} color="#dc2626">
+                {balancesDue.length === 0 ? <span className="glance-empty">Every guest has paid in full</span> : balancesDue.slice(0, 4).map(b => bookingLine(b,
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}>
+                        {b.ended && (
+                            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'white', backgroundColor: '#dc2626', padding: '0.05rem 0.35rem', borderRadius: '0.3rem' }} title={`Checked out on ${format(b.checkOut, 'd MMM')}`}>
+                                Left {format(b.checkOut, 'd MMM')}
+                            </span>
+                        )}
+                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#b91c1c' }}>
+                            {Number(b.pending).toLocaleString()}
+                        </span>
+                        {settleAction(b)}
+                    </span>))}
+                {balancesDue.length > 4 && <span className="glance-empty">+{balancesDue.length - 4} more</span>}
             </SummaryCard>
         </div>
     );
 
     const legend = (
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--text-light)', alignItems: 'center' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }} title="Bookings that haven't started yet have a colour per guest">
+                <span style={{ width: '14px', height: '10px', borderRadius: '3px', background: 'linear-gradient(90deg, #6366f1, #ec4899, #14b8a6)' }} /> Upcoming (colour per guest)
+            </span>
             {Object.values(STATUS_STYLES).map(s => (
                 <span key={s.label} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
                     <span style={{ width: '14px', height: '10px', borderRadius: '3px', backgroundColor: s.color }} /> {s.label}
@@ -354,21 +364,23 @@ export default function Dashboard() {
             {upcoming.length === 0 ? (
                 <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-light)' }}>No upcoming stays.</div>
             ) : upcoming.map(b => {
-                const canCheckOut = !b.checkedOutAt && b.checkIn <= today;
                 return (
-                    <div key={b.key} onClick={() => openEdit(b)} style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', borderLeft: `4px solid ${STATUS_STYLES[b.status].color}`, cursor: 'pointer' }}>
+                    <div key={b.key} onClick={() => openEdit(b)} style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', borderLeft: `4px solid ${b.color}`, cursor: 'pointer' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
                             <b>{b.guestName}</b>
-                            <StatusPill status={b.status} />
+                            <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                {b.upcoming && <UpcomingPill color={b.color} />}
+                                <StatusPill status={b.status} />
+                            </div>
                         </div>
                         <div style={{ fontSize: '0.85rem', color: 'var(--text-light)', marginTop: '0.2rem' }}>
                             {b.rooms.join(', ')} · {shortDate(b.checkIn)} → {shortDate(b.checkOut)} ({b.nights}n){b.breakfast ? ' · 🍳' : ''}
                         </div>
                         {b.pending > 0.05 && <div style={{ fontSize: '0.85rem', color: '#b45309', marginTop: '0.2rem' }}>Balance {lkr(b.pending)}</div>}
                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                            {canCheckOut && (
-                                <button className="btn" style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem', backgroundColor: '#10b981', color: 'white' }} onClick={(e) => { e.stopPropagation(); setCheckoutBooking(b); }}>
-                                    <LogOut size={14} /> Check out
+                            {b.pending > 0.05 && (
+                                <button className="btn" style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem', backgroundColor: '#10b981', color: 'white' }} onClick={(e) => { e.stopPropagation(); setSettleBooking(b); }}>
+                                    <HandCoins size={14} /> Settle
                                 </button>
                             )}
                             <ContactButtons phone={b.phoneNo} compact />
@@ -446,14 +458,15 @@ export default function Dashboard() {
                                     </div>
                                 )}
 
-                                {/* One bar per stay, from mid check-in day to mid check-out day */}
+                                {/* One bar per stay covering its nights only: check-in day up to (not including)
+                                    the check-out day, so the check-out day reads as free for a new booking */}
                                 {roomBookings.map(b => {
                                     const startIdx = differenceInDays(b.checkIn, currentDate);
                                     const endIdx = differenceInDays(b.checkOut, currentDate);
                                     const clippedStart = startIdx < 0;
-                                    const clippedEnd = endIdx >= daysCount;
-                                    const from = clippedStart ? 0 : startIdx + 0.5;
-                                    const to = clippedEnd ? daysCount : endIdx + 0.5;
+                                    const clippedEnd = endIdx > daysCount;
+                                    const from = clippedStart ? 0 : startIdx;
+                                    const to = clippedEnd ? daysCount : endIdx;
                                     const width = (to - from) * cellW - 4;
                                     if (width <= 0) return null;
                                     const badge = SOURCE_BADGES[b.bookingSource];
@@ -464,12 +477,12 @@ export default function Dashboard() {
                                             style={{
                                                 left: from * cellW + 2,
                                                 width,
-                                                backgroundColor: STATUS_STYLES[b.status].color,
+                                                backgroundColor: b.color,
                                                 borderTopLeftRadius: clippedStart ? 0 : 8,
                                                 borderBottomLeftRadius: clippedStart ? 0 : 8,
                                                 borderTopRightRadius: clippedEnd ? 0 : 8,
                                                 borderBottomRightRadius: clippedEnd ? 0 : 8,
-                                                opacity: b.checkedOutAt ? 0.75 : 1
+                                                opacity: b.status === 'completed' ? 0.75 : 1
                                             }}
                                             onClick={() => { setHover(null); openEdit(b); }}
                                             onMouseEnter={(e) => showHover(b, e)}
@@ -567,16 +580,15 @@ export default function Dashboard() {
                 <HoverCard
                     booking={hover.booking}
                     rect={hover.rect}
-                    today={today}
                     onEnter={keepHover}
                     onLeave={hideHover}
                     onEdit={() => { setHover(null); openEdit(hover.booking); }}
-                    onCheckout={() => { setCheckoutBooking(hover.booking); setHover(null); }}
+                    onSettle={() => { setSettleBooking(hover.booking); setHover(null); }}
                 />
             )}
 
-            {checkoutBooking && (
-                <CheckoutDialog booking={checkoutBooking} onClose={() => setCheckoutBooking(null)} onDone={afterCheckout} />
+            {settleBooking && (
+                <SettleDialog booking={settleBooking} onClose={() => setSettleBooking(null)} onDone={afterSettle} />
             )}
         </div>
     );

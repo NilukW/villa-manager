@@ -8,6 +8,7 @@ import {
 import { fetchWithAuth } from '../utils/api';
 import ProcessingOverlay, { ButtonSpinner } from '../components/ProcessingOverlay';
 import { notifyDataChanged } from '../utils/notifications';
+import { BillStatusBadge, PaidDueLine, PayBillModal, PaymentsList } from '../components/BillPayments';
 
 export default function Laundry() {
     const [bills, setBills] = useState([]);
@@ -30,11 +31,6 @@ export default function Laundry() {
     // Modal states
     const [viewingBill, setViewingBill] = useState(null);
     const [payingBill, setPayingBill] = useState(null);
-    const [paymentData, setPaymentData] = useState({
-        paidDate: new Date().toISOString().split('T')[0],
-        paymentNotes: ''
-    });
-    const [isPaying, setIsPaying] = useState(false);
 
     // Fetch laundry bills on load
     const fetchBills = async () => {
@@ -150,34 +146,18 @@ export default function Laundry() {
         }
     };
 
-    // Settle / Mark Bill as Paid
-    const handleConfirmPayment = async () => {
-        if (!payingBill || isPaying) return;
-        setIsPaying(true);
-        try {
-            const res = await fetchWithAuth(`/api/laundry/bills/${payingBill.id}/pay`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(paymentData)
-            });
-
-            if (!res.ok) {
-                const errData = await res.json();
-                throw new Error(errData.error || 'Failed to mark bill as paid');
-            }
-
-            await fetchBills();
-            setPayingBill(null);
-        } catch (err) {
-            alert('Payment failed: ' + err.message);
-        } finally {
-            setIsPaying(false);
+    // Reload bills and keep an open details view in step with the latest payments
+    const refreshAfterPayment = async () => {
+        await fetchBills();
+        if (viewingBill) {
+            const res = await fetchWithAuth(`/api/laundry/bills/${viewingBill.id}`);
+            if (res.ok) setViewingBill((await res.json()).data);
         }
     };
 
-    // Revert Paid Bill to Pending
+    // Remove all payments: back to Pending
     const handleRevertToPending = async (billId) => {
-        if (!window.confirm("Revert this bill back to Pending? This will also remove the corresponding expense record from Financials.")) return;
+        if (!window.confirm("Remove all payments for this bill and set it back to Pending? Their expense records will also be removed from Financials.")) return;
         try {
             const res = await fetchWithAuth(`/api/laundry/bills/${billId}/unpay`, {
                 method: 'POST'
@@ -221,14 +201,16 @@ export default function Laundry() {
         bills.forEach(bill => {
             const amt = Number(bill.totalAmount || 0);
             const qty = Number(bill.totalQty || 0);
+            const paid = Number(bill.paidAmount || 0);
+            const due = Number(bill.balance ?? Math.max(0, amt - paid));
             totalSpend += amt;
             totalPieces += qty;
+            paidAmount += paid;
+            pendingAmount += due;
 
             if (bill.status === 'Paid') {
-                paidAmount += amt;
                 paidCount++;
             } else {
-                pendingAmount += amt;
                 pendingCount++;
             }
 
@@ -239,8 +221,8 @@ export default function Laundry() {
             }
             monthlyStats[m].amount += amt;
             monthlyStats[m].pieces += qty;
-            if (bill.status === 'Paid') monthlyStats[m].paid += amt;
-            else monthlyStats[m].pending += amt;
+            monthlyStats[m].paid += paid;
+            monthlyStats[m].pending += due;
 
             // Line items aggregation
             (bill.items || []).forEach(it => {
@@ -358,10 +340,9 @@ export default function Laundry() {
     return (
         <div className="animate-slide-up" style={{ paddingBottom: '3rem' }}>
             <ProcessingOverlay
-                show={isUploading || isSaving || isPaying}
+                show={isUploading || isSaving}
                 message={
                     isUploading ? 'Reading laundry invoice...'
-                        : isPaying ? 'Recording payment...'
                         : savingAs === 'paid' ? 'Saving bill & posting expense...'
                         : 'Saving bill...'
                 }
@@ -714,27 +695,10 @@ export default function Laundry() {
                                                     </td>
                                                     <td data-label="Amount" style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
                                                         {(bill.totalAmount || 0).toLocaleString()}
+                                                        <PaidDueLine bill={bill} />
                                                     </td>
                                                     <td data-label="Status" style={{ padding: '1rem' }}>
-                                                        {isPaid ? (
-                                                            <span style={{ 
-                                                                display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
-                                                                padding: '0.25rem 0.6rem', borderRadius: '1rem', 
-                                                                backgroundColor: '#dcfce7', color: '#15803d', 
-                                                                fontSize: '0.8rem', fontWeight: 600 
-                                                            }}>
-                                                                <CheckCircle2 size={13} /> Paid
-                                                            </span>
-                                                        ) : (
-                                                            <span style={{ 
-                                                                display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
-                                                                padding: '0.25rem 0.6rem', borderRadius: '1rem', 
-                                                                backgroundColor: '#fef3c7', color: '#b45309', 
-                                                                fontSize: '0.8rem', fontWeight: 600 
-                                                            }}>
-                                                                <Clock size={13} /> Pending
-                                                            </span>
-                                                        )}
+                                                        <BillStatusBadge bill={bill} />
                                                         {isPaid && bill.paidDate && (
                                                             <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', marginTop: '0.2rem' }}>
                                                                 Paid on {bill.paidDate}
@@ -753,28 +717,23 @@ export default function Laundry() {
                                                                 <Eye size={16} />
                                                             </button>
 
-                                                            {/* Mark as Paid / Revert */}
-                                                            {!isPaid ? (
-                                                                <button 
+                                                            {/* Pay (full or part) / remove payments */}
+                                                            {!isPaid && (
+                                                                <button
                                                                     className="btn"
-                                                                    onClick={() => {
-                                                                        setPayingBill(bill);
-                                                                        setPaymentData({
-                                                                            paidDate: new Date().toISOString().split('T')[0],
-                                                                            paymentNotes: ''
-                                                                        });
-                                                                    }}
+                                                                    onClick={() => setPayingBill(bill)}
                                                                     style={{ padding: '0.4rem 0.75rem', backgroundColor: '#10b981', color: 'white', fontSize: '0.85rem' }}
-                                                                    title="Mark as Paid"
+                                                                    title="Record a full or part payment"
                                                                 >
-                                                                    <CheckCircle2 size={15} /> Pay
+                                                                    <CheckCircle2 size={15} /> {Number(bill.paidAmount) > 0 ? 'Pay rest' : 'Pay'}
                                                                 </button>
-                                                            ) : (
-                                                                <button 
+                                                            )}
+                                                            {Number(bill.paidAmount) > 0 && (
+                                                                <button
                                                                     className="btn"
                                                                     onClick={() => handleRevertToPending(bill.id)}
                                                                     style={{ padding: '0.4rem 0.6rem', border: '1px solid var(--border)', backgroundColor: '#f1f5f9', color: 'var(--text-light)', fontSize: '0.8rem' }}
-                                                                    title="Revert to Pending"
+                                                                    title="Remove all payments (back to Pending)"
                                                                 >
                                                                     <RotateCcw size={14} />
                                                                 </button>
@@ -1083,8 +1042,8 @@ export default function Laundry() {
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
                                 <div style={{ padding: '0.75rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', textTransform: 'uppercase' }}>Status</div>
-                                    <div style={{ fontWeight: 700, marginTop: '0.2rem', color: viewingBill.status === 'Paid' ? 'var(--success)' : '#b45309' }}>
-                                        {viewingBill.status}
+                                    <div style={{ marginTop: '0.3rem' }}>
+                                        <BillStatusBadge bill={viewingBill} />
                                     </div>
                                 </div>
                                 <div style={{ padding: '0.75rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
@@ -1101,12 +1060,17 @@ export default function Laundry() {
                                 </div>
                             </div>
 
-                            {viewingBill.paidDate && (
-                                <div style={{ padding: '0.75rem', backgroundColor: '#f0fdf4', borderRadius: '0.5rem', border: '1px solid #bbf7d0', marginBottom: '1.25rem', fontSize: '0.85rem', color: '#166534' }}>
-                                    Settled on: <b>{viewingBill.paidDate}</b>
-                                    {viewingBill.paymentNotes && <span> • Notes: {viewingBill.paymentNotes}</span>}
+                            {Number(viewingBill.paidAmount) > 0 && viewingBill.status !== 'Paid' && (
+                                <div style={{ padding: '0.75rem', backgroundColor: '#e0f2fe', borderRadius: '0.5rem', border: '1px solid #bae6fd', marginBottom: '1rem', fontSize: '0.85rem', color: '#0369a1' }}>
+                                    Paid so far <b>LKR {Number(viewingBill.paidAmount).toLocaleString()}</b> · still due <b>LKR {Number(viewingBill.balance).toLocaleString()}</b>
                                 </div>
                             )}
+
+                            <PaymentsList
+                                payments={viewingBill.payments}
+                                paymentsUrl={`/api/laundry/bills/${viewingBill.id}/payments`}
+                                onChanged={refreshAfterPayment}
+                            />
 
                             <h4 style={{ margin: '0 0 0.75rem 0', color: 'var(--text)' }}>Itemized Breakdown</h4>
                             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
@@ -1151,21 +1115,21 @@ export default function Laundry() {
                             <button className="btn" onClick={() => setViewingBill(null)} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
                                 Close
                             </button>
-                            {viewingBill.status !== 'Paid' ? (
-                                <button 
+                            {viewingBill.status !== 'Paid' && (
+                                <button
                                     className="btn"
                                     onClick={() => {
                                         const b = viewingBill;
                                         setViewingBill(null);
                                         setPayingBill(b);
-                                        setPaymentData({ paidDate: new Date().toISOString().split('T')[0], paymentNotes: '' });
                                     }}
                                     style={{ backgroundColor: '#10b981', color: 'white' }}
                                 >
-                                    <CheckCircle2 size={16} /> Mark as Paid
+                                    <CheckCircle2 size={16} /> Record Payment
                                 </button>
-                            ) : (
-                                <button 
+                            )}
+                            {Number(viewingBill.paidAmount) > 0 && (
+                                <button
                                     className="btn"
                                     onClick={() => {
                                         handleRevertToPending(viewingBill.id);
@@ -1173,7 +1137,7 @@ export default function Laundry() {
                                     }}
                                     style={{ border: '1px solid var(--border)', backgroundColor: '#f1f5f9' }}
                                 >
-                                    <RotateCcw size={15} /> Revert to Pending
+                                    <RotateCcw size={15} /> Remove All Payments
                                 </button>
                             )}
                         </div>
@@ -1181,77 +1145,18 @@ export default function Laundry() {
                 </div>
             )}
 
-            {/* MODAL 2: CONFIRM PAYMENT (SETTLE BILL) */}
+            {/* MODAL 2: RECORD A FULL OR PART PAYMENT */}
             {payingBill && (
-                <div className="modal-backdrop" style={{ 
-                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
-                    backgroundColor: 'rgba(15, 23, 42, 0.6)', display: 'flex', 
-                    alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1.5rem' 
-                }}>
-                    <div className="card animate-slide-up" style={{ width: '100%', maxWidth: '480px', padding: 0, overflow: 'hidden' }}>
-                        <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <h3 style={{ margin: 0, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <CheckCircle2 className="text-success" size={20} />
-                                Settle Laundry Bill
-                            </h3>
-                            <button onClick={() => setPayingBill(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-light)' }}>
-                                <X size={20} />
-                            </button>
-                        </div>
-
-                        <div style={{ padding: '1.5rem' }}>
-                            <div style={{ padding: '1rem', backgroundColor: '#f0fdf4', borderRadius: '0.5rem', border: '1px solid #bbf7d0', marginBottom: '1.25rem' }}>
-                                <div style={{ fontSize: '0.85rem', color: '#166534' }}>Settling Invoice</div>
-                                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#14532d', margin: '0.2rem 0' }}>
-                                    {payingBill.invoiceNo} — LKR {Number(payingBill.totalAmount).toLocaleString()}
-                                </div>
-                                <div style={{ fontSize: '0.8rem', color: '#166534' }}>
-                                    {payingBill.vendor} • {payingBill.totalQty} items
-                                </div>
-                            </div>
-
-                            <p style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginBottom: '1.25rem' }}>
-                                Marking this bill as paid will automatically record an expense of <b>LKR {Number(payingBill.totalAmount).toLocaleString()}</b> under category <b>"Laundry"</b> in your financial accounts.
-                            </p>
-
-                            <div className="form-group">
-                                <label className="form-label">Payment Date</label>
-                                <input 
-                                    type="date" 
-                                    className="form-control"
-                                    value={paymentData.paidDate}
-                                    onChange={e => setPaymentData({ ...paymentData, paidDate: e.target.value })}
-                                    required
-                                />
-                            </div>
-
-                            <div className="form-group">
-                                <label className="form-label">Payment Notes / Reference (Optional)</label>
-                                <input 
-                                    type="text" 
-                                    className="form-control"
-                                    placeholder="e.g. Bank transfer, Cash settlement..."
-                                    value={paymentData.paymentNotes}
-                                    onChange={e => setPaymentData({ ...paymentData, paymentNotes: e.target.value })}
-                                />
-                            </div>
-                        </div>
-
-                        <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', backgroundColor: '#f8fafc' }}>
-                            <button className="btn" onClick={() => setPayingBill(null)} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
-                                Cancel
-                            </button>
-                            <button 
-                                className="btn" 
-                                onClick={handleConfirmPayment}
-                                disabled={isPaying}
-                                style={{ backgroundColor: '#10b981', color: 'white', fontWeight: 600 }}
-                            >
-                                {isPaying ? <><ButtonSpinner /> Processing...</> : 'Confirm Payment & Post Expense'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <PayBillModal
+                    title="Pay Laundry Bill"
+                    reference={`Invoice ${payingBill.invoiceNo}`}
+                    subtitle={`${payingBill.vendor || "Shiny Laundry"} • ${payingBill.totalQty || 0} items${payingBill.month ? ` • ${payingBill.month}` : ""}`}
+                    bill={payingBill}
+                    payUrl={`/api/laundry/bills/${payingBill.id}/pay`}
+                    expenseCategory="Laundry"
+                    onClose={() => setPayingBill(null)}
+                    onDone={async () => { setPayingBill(null); await refreshAfterPayment(); }}
+                />
             )}
         </div>
     );

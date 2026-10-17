@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { differenceInDays, parseISO, startOfDay, format, addDays } from 'date-fns';
-import { Plus, X, Trash2, LogOut, CheckCircle2, RotateCcw, Save } from 'lucide-react';
+import { Plus, X, Trash2, CheckCircle2, Save, HandCoins } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 import { notifyDataChanged } from '../utils/notifications';
 import { groupReservations, lkr } from '../utils/bookings';
-import CheckoutDialog from '../components/CheckoutDialog';
+import SettleDialog from '../components/SettleDialog';
 import ProcessingOverlay from '../components/ProcessingOverlay';
 
 export default function EditBooking() {
@@ -15,8 +15,8 @@ export default function EditBooking() {
     const [groupRows, setGroupRows] = useState([]);
     const [reloadKey, setReloadKey] = useState(0);
     const [confirmingDelete, setConfirmingDelete] = useState(false);
-    const [checkingOut, setCheckingOut] = useState(false);
-    const [busy, setBusy] = useState(null); // 'delete' | 'undo-checkout'
+    const [settling, setSettling] = useState(false);
+    const [busy, setBusy] = useState(null); // 'delete' while deleting
     const [formData, setFormData] = useState({
         guestName: '', phoneNo: '', nicOrPassport: '', checkInDate: '', checkOutDate: '',
         selectedRooms: [], unitPrice: '', totalAmount: '',
@@ -107,21 +107,6 @@ export default function EditBooking() {
         }
     };
 
-    const handleUndoCheckout = async () => {
-        if (!window.confirm('Undo the checkout confirmation? Payments recorded at checkout are kept.')) return;
-        setBusy('undo-checkout');
-        try {
-            const res = await fetchWithAuth(`/api/reservations/group/${id}/checkout`, { method: 'DELETE' });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(data.error || 'Failed to undo checkout');
-            notifyDataChanged();
-            setReloadKey(k => k + 1);
-        } catch (err) {
-            setSubmitError(err.message);
-        } finally {
-            setBusy(null);
-        }
-    };
 
     useEffect(() => {
         if (!formData.checkInDate || !formData.checkOutDate) {
@@ -271,21 +256,19 @@ export default function EditBooking() {
 
     return (
         <div className="animate-slide-up">
-            <ProcessingOverlay show={!!busy} message={busy === 'delete' ? 'Deleting reservation...' : 'Undoing checkout...'} />
+            <ProcessingOverlay show={busy === 'delete'} message="Deleting reservation..." />
 
             <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', maxWidth: '800px', margin: '0 auto 1.5rem' }}>
                 <div>
                     <h1 className="page-title">Edit Reservation</h1>
                     {booking && (
                         <div style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            {booking.checkedOutAt ? (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.6rem', borderRadius: '1rem', backgroundColor: '#f1f5f9', color: 'var(--text-light)', fontWeight: 600, fontSize: '0.8rem' }}>
-                                    <CheckCircle2 size={13} /> Checked out {format(parseISO(booking.checkedOutAt), 'd MMM yyyy')}
-                                </span>
-                            ) : booking.pending > 0.05 ? (
+                            {booking.pending > 0.05 ? (
                                 <span style={{ color: '#b45309', fontWeight: 600 }}>Balance due {lkr(booking.pending)}</span>
                             ) : (
-                                <span style={{ color: 'var(--success)', fontWeight: 600 }}>Fully paid</span>
+                                <span style={{ color: 'var(--success)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                                    <CheckCircle2 size={14} /> Fully paid{booking.ended ? ' · stay completed' : ''}
+                                </span>
                             )}
                         </div>
                     )}
@@ -296,13 +279,9 @@ export default function EditBooking() {
                         <button type="submit" form="booking-form" className="btn btn-primary">
                             <Save size={16} /> Update
                         </button>
-                        {booking.checkedOutAt ? (
-                            <button type="button" className="btn" onClick={handleUndoCheckout} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
-                                <RotateCcw size={16} /> Undo Checkout
-                            </button>
-                        ) : (
-                            <button type="button" className="btn" onClick={() => setCheckingOut(true)} style={{ backgroundColor: '#10b981', color: 'white' }}>
-                                <LogOut size={16} /> Check Out
+                        {booking.pending > 0.05 && (
+                            <button type="button" className="btn" onClick={() => setSettling(true)} style={{ backgroundColor: '#10b981', color: 'white' }}>
+                                <HandCoins size={16} /> Settle
                             </button>
                         )}
                         <button type="button" className="btn" onClick={() => setConfirmingDelete(true)} style={{ backgroundColor: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca' }}>
@@ -312,11 +291,12 @@ export default function EditBooking() {
                 )}
             </div>
 
-            {checkingOut && booking && (
-                <CheckoutDialog
+            {/* After a payment, reload so the form's payment list includes it (saving would otherwise drop it) */}
+            {settling && booking && (
+                <SettleDialog
                     booking={booking}
-                    onClose={() => setCheckingOut(false)}
-                    onDone={() => { setCheckingOut(false); setReloadKey(k => k + 1); }}
+                    onClose={() => setSettling(false)}
+                    onDone={() => { setSettling(false); setReloadKey(k => k + 1); }}
                 />
             )}
 

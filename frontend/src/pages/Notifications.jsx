@@ -163,7 +163,7 @@ export default function Notifications() {
                                     checked={!!settings.checkouts?.enabled}
                                     onChange={e => setSettings(s => ({ ...s, checkouts: { ...s.checkouts, enabled: e.target.checked } }))}
                                 />
-                                <span>Remind me to confirm each day's guest checkouts and settle their balance</span>
+                                <span>Remind me when a guest still owes a balance on or after their checkout day</span>
                             </label>
 
                             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1.25rem', cursor: 'pointer' }}>

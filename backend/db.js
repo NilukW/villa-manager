@@ -50,7 +50,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
         db.run("ALTER TABLE reservations ADD COLUMN usdAmount REAL", () => {});
         db.run("ALTER TABLE reservations ADD COLUMN conversionRate REAL", () => {});
         db.run("ALTER TABLE reservations ADD COLUMN breakfastIncluded INTEGER DEFAULT 0", () => {});
-        // Date the guest's checkout was confirmed (balance settled); NULL until then
+        // No longer used: checkout confirmation was replaced by date-based status + Settle.
+        // Kept because removing a column from existing SQLite databases needs a table rebuild.
         db.run("ALTER TABLE reservations ADD COLUMN checkedOutAt TEXT", () => {});
 
         // Create Users Table
@@ -187,6 +188,20 @@ const db = new sqlite3.Database(dbPath, (err) => {
         });
 
         db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_utility_bills_type_billno ON utility_bills (type, billNo COLLATE NOCASE)", () => {});
+
+        // Payments against laundry/utility bills (a bill may be paid in several parts);
+        // billKind is 'laundry' or 'utility', expenseId links the expense posted for that payment
+        db.run(`CREATE TABLE IF NOT EXISTS bill_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            billKind TEXT NOT NULL,
+            billId INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            notes TEXT,
+            expenseId INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run("CREATE INDEX IF NOT EXISTS idx_bill_payments_bill ON bill_payments (billKind, billId)", () => {});
 
         // Staff & salary payments
         db.run(`CREATE TABLE IF NOT EXISTS staff (

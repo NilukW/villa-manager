@@ -113,6 +113,10 @@ export default function StaffPayments() {
         const amount = Number(paying.amount);
         if (!(amount > 0)) return setFormError('Please enter an amount greater than zero.');
         if (!paying.date) return setFormError('Please choose the payment date.');
+        // Advances can never exceed what is left of the month's salary (the server enforces this too)
+        if (paying.type === 'advance' && amount > paying.balance + 0.001) {
+            return setFormError(`An advance can't be more than the remaining salary for ${monthLabel(month)} (${lkr(Math.max(0, paying.balance))}).`);
+        }
         if (amount > paying.balance + 0.001) {
             const over = round2(amount - Math.max(0, paying.balance));
             if (!window.confirm(`This is ${lkr(over)} more than the remaining balance for ${monthLabel(month)} (${lkr(Math.max(0, paying.balance))}). Record it anyway?`)) return;
@@ -276,7 +280,9 @@ export default function StaffPayments() {
                                                 <button
                                                     className="btn"
                                                     onClick={() => openPayment(r, 'advance')}
-                                                    style={{ padding: '0.4rem 0.75rem', border: '1px solid #fcd34d', backgroundColor: '#fffbeb', color: '#b45309', fontSize: '0.85rem' }}
+                                                    disabled={r.balance <= 0.001}
+                                                    style={{ padding: '0.4rem 0.75rem', border: `1px solid ${r.balance > 0.001 ? '#fcd34d' : 'var(--border)'}`, backgroundColor: r.balance > 0.001 ? '#fffbeb' : '#f1f5f9', color: r.balance > 0.001 ? '#b45309' : 'var(--text-light)', fontSize: '0.85rem', cursor: r.balance > 0.001 ? 'pointer' : 'not-allowed' }}
+                                                    title={r.balance > 0.001 ? `Up to ${lkr(r.balance)} can be advanced` : 'No salary left this month to advance'}
                                                 >
                                                     <HandCoins size={15} /> Advance
                                                 </button>
@@ -379,6 +385,9 @@ export default function StaffPayments() {
                             <div style={{ padding: '0.85rem 1rem', backgroundColor: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border)', marginBottom: '1.25rem', fontSize: '0.9rem', color: 'var(--text-light)' }}>
                                 Salary month: <b style={{ color: 'var(--text)' }}>{monthLabel(month)}</b><br />
                                 Remaining balance: <b style={{ color: 'var(--text)' }}>{lkr(Math.max(0, paying.balance))}</b>
+                                {paying.type === 'advance' && (
+                                    <><br />Maximum advance: <b style={{ color: '#b45309' }}>{lkr(Math.max(0, paying.balance))}</b></>
+                                )}
                             </div>
 
                             <div className="form-group">

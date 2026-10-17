@@ -8,6 +8,12 @@ const multer = require('multer');
 const crypto = require('crypto');
 const { parseLaundryPdf } = require('./laundryParser');
 const { parseUtilityPdf, UTILITY_TYPES } = require('./utilityParser');
+const billPayments = require('./billPayments');
+
+// Promise wrappers for the sqlite3 callback API
+const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows)));
+const dbGet = (sql, params = []) => new Promise((resolve, reject) => db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+const dbRun = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, function (err) { err ? reject(err) : resolve(this); }));
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const app = express();
@@ -196,13 +202,12 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
             return res.status(400).json({ error: `The following rooms are already booked during these dates: ${conflictRooms}` });
         }
 
-        // Rows are deleted and re-inserted, so carry over fields the edit form doesn't send:
-        // the checkout confirmation (whole group) and each room's channel-sync uid
-        db.all("SELECT roomName, uid, checkedOutAt FROM reservations WHERE groupId = ?", [groupId], (prevErr, previousRows) => {
+        // Rows are deleted and re-inserted, so carry over what the edit form doesn't send:
+        // each room's channel-sync uid (losing it would duplicate the booking on the next iCal sync)
+        db.all("SELECT roomName, uid FROM reservations WHERE groupId = ?", [groupId], (prevErr, previousRows) => {
         if (prevErr) return res.status(500).json({ error: prevErr.message });
         const uidByRoom = {};
         (previousRows || []).forEach(r => { if (r.uid) uidByRoom[r.roomName] = r.uid; });
-        const checkedOutAt = (previousRows || []).map(r => r.checkedOutAt).find(Boolean) || null;
 
         db.run("DELETE FROM reservations WHERE groupId = ?", [groupId], function(delErr) {
             if (delErr) return res.status(500).json({ error: delErr.message });
@@ -210,8 +215,8 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
             const sql = `INSERT INTO reservations (
                 guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                 roomName, unitPrice, totalAmount, advancedAmount, advancedPayments, remarks, bookingSource, groupId,
-                usdAmount, conversionRate, breakfastIncluded, uid, checkedOutAt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                usdAmount, conversionRate, breakfastIncluded, uid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
             const numRooms = roomNames.length;
             const splitTotal = totalAmount ? (totalAmount / numRooms) : 0;
@@ -232,7 +237,7 @@ app.put('/api/reservations/group/:groupId', (req, res) => {
                 return insertPromise([
                     guestName, phoneNo, nicOrPassport, checkInDate, checkOutDate,
                     rName, unitPrice, splitTotal, splitAdvance, JSON.stringify(splitPayments), remarks, bookingSource || 'Manual', groupId,
-                    splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded), uidByRoom[rName] || null, checkedOutAt
+                    splitUsdAmount, conversionRate || null, parseBreakfast(breakfastIncluded), uidByRoom[rName] || null
                 ]);
             }))
             .then(ids => {
@@ -315,96 +320,39 @@ const groupPaymentState = (rows) => {
     return { payments, total, paid, pending: Math.round((total - paid) * 100) / 100 };
 };
 
-// Confirm a guest's checkout. Any remaining balance must be settled in the same step:
-// amountReceived is recorded as a payment, and checkout is refused while a balance remains.
-app.post('/api/reservations/group/:groupId/checkout', (req, res) => {
+// Record a payment towards a booking's balance (full or part), dated whenever it was received —
+// at check-in, on departure or any other day. Paying more than the balance is refused.
+app.post('/api/reservations/group/:groupId/settle', (req, res) => {
     const groupId = req.params.groupId;
-    const amountReceived = Number(req.body.amountReceived || 0);
-    const paymentDate = req.body.paymentDate || todayKey();
-    const checkoutDate = req.body.checkoutDate || todayKey();
-    if (isNaN(amountReceived) || amountReceived < 0) return res.status(400).json({ error: "Invalid amount received" });
+    const amount = Math.round(Number(req.body.amountReceived) * 100) / 100;
+    const settlementDate = req.body.date || todayKey();
+    if (!(amount > 0)) return res.status(400).json({ error: "Enter an amount greater than zero" });
 
     db.all("SELECT * FROM reservations WHERE groupId = ? OR (id = ? AND (groupId IS NULL OR groupId = ''))", [groupId, groupId], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!rows || rows.length === 0) return res.status(404).json({ error: "Booking not found" });
-        if (rows.some(r => r.checkedOutAt)) return res.status(400).json({ error: "This guest has already been checked out." });
 
         const state = groupPaymentState(rows);
-        const remaining = Math.round((state.pending - amountReceived) * 100) / 100;
-        if (remaining > 0.05) {
-            return res.status(400).json({
-                error: `A balance of LKR ${state.pending.toLocaleString()} is due. Settle the full balance to confirm the checkout (LKR ${remaining.toLocaleString()} still short).`
-            });
+        if (state.pending <= 0.05) return res.status(400).json({ error: "This booking is already fully paid." });
+        if (amount > state.pending + 0.05) {
+            return res.status(400).json({ error: `LKR ${amount.toLocaleString()} is more than the balance due (LKR ${state.pending.toLocaleString()}).` });
         }
 
-        const payments = [...state.payments];
-        if (amountReceived > 0) payments.push({ date: paymentDate, amount: String(amountReceived / rows.length) });
+        // Payments are stored split per room on every row of the group
+        const payments = [...state.payments, { date: settlementDate, amount: String(amount / rows.length) }];
         const advancePerRoom = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         const ids = rows.map(r => r.id);
+        const remaining = Math.round((state.pending - amount) * 100) / 100;
 
-        db.run(`UPDATE reservations SET advancedPayments = ?, advancedAmount = ?, checkedOutAt = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
-            [JSON.stringify(payments), advancePerRoom, checkoutDate, ...ids], (upErr) => {
+        db.run(`UPDATE reservations SET advancedPayments = ?, advancedAmount = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+            [JSON.stringify(payments), advancePerRoom, ...ids], (upErr) => {
             if (upErr) return res.status(500).json({ error: upErr.message });
             res.json({
-                message: amountReceived > 0
-                    ? `Payment of LKR ${amountReceived.toLocaleString()} recorded and checkout confirmed`
-                    : "Checkout confirmed",
-                data: { checkedOutAt: checkoutDate }
+                message: remaining > 0.05
+                    ? `Payment of LKR ${amount.toLocaleString()} recorded; LKR ${remaining.toLocaleString()} still due`
+                    : "Balance settled in full",
+                data: { remaining: Math.max(0, remaining) }
             });
-        });
-    });
-});
-
-// Undo a checkout confirmation (payments recorded with it are kept)
-app.delete('/api/reservations/group/:groupId/checkout', (req, res) => {
-    const groupId = req.params.groupId;
-    db.run("UPDATE reservations SET checkedOutAt = NULL WHERE groupId = ? OR (id = ? AND (groupId IS NULL OR groupId = ''))", [groupId, groupId], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (this.changes === 0) return res.status(404).json({ error: "Booking not found" });
-        res.json({ message: "Checkout undone" });
-    });
-});
-
-// Settle group reservation balance
-app.post('/api/reservations/group/:groupId/settle', (req, res) => {
-    const { amountReceived, date } = req.body;
-    const groupId = req.params.groupId;
-
-    if (!amountReceived || isNaN(amountReceived)) {
-        return res.status(400).json({ error: "Invalid amount received" });
-    }
-
-    db.all("SELECT * FROM reservations WHERE groupId = ?", [groupId], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!rows || rows.length === 0) return res.status(404).json({ error: "Group not found" });
-
-        const firstRow = rows[0];
-        let payments = [];
-        try {
-            payments = firstRow.advancedPayments ? JSON.parse(firstRow.advancedPayments) : [];
-        } catch (e) {}
-
-        const numRooms = rows.length;
-        const totalAmountSettled = Number(amountReceived);
-        
-        // Add the explicitly split settlement amount to the already split payments list
-        const splitSettledAmount = totalAmountSettled / numRooms;
-        const settlementDate = date || todayKey();
-        
-        payments.push({
-            date: settlementDate,
-            amount: splitSettledAmount.toString()
-        });
-
-        // Calculate the new split advance per room from the updated payments array
-        const splitAdvance = payments.reduce((sum, p) => sum + Number(p.amount), 0);
-        
-        const newPaymentsJson = JSON.stringify(payments);
-
-        db.run("UPDATE reservations SET advancedAmount = ?, advancedPayments = ? WHERE groupId = ?", 
-            [splitAdvance, newPaymentsJson, groupId], function(updateErr) {
-            if (updateErr) return res.status(500).json({ error: updateErr.message });
-            res.json({ message: "Balance settled completely" });
         });
     });
 });
@@ -545,64 +493,52 @@ app.post('/api/laundry/upload-preview', uploadPdf.single('file'), async (req, re
     }
 });
 
-// Get all laundry bills with their line items
-app.get('/api/laundry/bills', (req, res) => {
-    db.all("SELECT * FROM laundry_bills ORDER BY date DESC, id DESC", [], (err, bills) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!bills || bills.length === 0) return res.json({ data: [] });
+// Laundry expense text for a bill (one expense per payment)
+const laundryExpenseDesc = (bill) =>
+    `Laundry Bill ${bill.invoiceNo} - ${bill.vendor || 'Shiny Laundry'}${bill.month ? ` (${bill.month})` : ''} - ${bill.totalQty || 0} items`;
 
-        const billIds = bills.map(b => b.id);
-        const placeholders = billIds.map(() => '?').join(',');
-        db.all(`SELECT * FROM laundry_bill_items WHERE billId IN (${placeholders}) ORDER BY id ASC`, billIds, (itemErr, items) => {
-            if (itemErr) return res.status(500).json({ error: itemErr.message });
+const parseDaily = (raw) => {
+    try { return raw ? JSON.parse(raw) : {}; } catch (e) { return {}; }
+};
 
-            const itemsMap = {};
-            (items || []).forEach(it => {
-                if (!itemsMap[it.billId]) itemsMap[it.billId] = [];
-                itemsMap[it.billId].push(it);
-            });
+const insertLaundryItems = (billId, items) => {
+    const lineItems = Array.isArray(items) ? items : [];
+    if (lineItems.length === 0) return;
+    const itemStmt = db.prepare("INSERT INTO laundry_bill_items (billId, description, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?)");
+    lineItems.forEach(it => itemStmt.run([billId, it.description || 'Linen Item', Number(it.quantity || 0), Number(it.unitPrice || 0), Number(it.amount || 0)]));
+    itemStmt.finalize();
+};
 
-            const enriched = bills.map(b => {
-                let parsedDaily = {};
-                try {
-                    if (b.dailyBreakdown) parsedDaily = JSON.parse(b.dailyBreakdown);
-                } catch(e) {}
-                return {
-                    ...b,
-                    dailyBreakdown: parsedDaily,
-                    items: itemsMap[b.id] || []
-                };
-            });
-
-            res.json({ data: enriched });
-        });
-    });
+// Get all laundry bills with their line items and payments
+app.get('/api/laundry/bills', async (req, res) => {
+    try {
+        const bills = await dbAll("SELECT * FROM laundry_bills ORDER BY date DESC, id DESC");
+        if (bills.length === 0) return res.json({ data: [] });
+        const ids = bills.map(b => b.id);
+        const items = await dbAll(`SELECT * FROM laundry_bill_items WHERE billId IN (${ids.map(() => '?').join(',')}) ORDER BY id ASC`, ids);
+        const itemsMap = {};
+        items.forEach(it => { (itemsMap[it.billId] = itemsMap[it.billId] || []).push(it); });
+        const withPaid = await billPayments.withPayments('laundry', bills);
+        res.json({ data: withPaid.map(b => ({ ...b, dailyBreakdown: parseDaily(b.dailyBreakdown), items: itemsMap[b.id] || [] })) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Get single laundry bill
-app.get('/api/laundry/bills/:id', (req, res) => {
-    db.get("SELECT * FROM laundry_bills WHERE id = ?", [req.params.id], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/laundry/bills/:id', async (req, res) => {
+    try {
+        const bill = await dbGet("SELECT * FROM laundry_bills WHERE id = ?", [req.params.id]);
         if (!bill) return res.status(404).json({ error: "Bill not found" });
-
-        db.all("SELECT * FROM laundry_bill_items WHERE billId = ? ORDER BY id ASC", [bill.id], (itemErr, items) => {
-            if (itemErr) return res.status(500).json({ error: itemErr.message });
-            let parsedDaily = {};
-            try {
-                if (bill.dailyBreakdown) parsedDaily = JSON.parse(bill.dailyBreakdown);
-            } catch(e) {}
-            res.json({
-                data: {
-                    ...bill,
-                    dailyBreakdown: parsedDaily,
-                    items: items || []
-                }
-            });
-        });
-    });
+        const items = await dbAll("SELECT * FROM laundry_bill_items WHERE billId = ? ORDER BY id ASC", [bill.id]);
+        const [withPaid] = await billPayments.withPayments('laundry', [bill]);
+        res.json({ data: { ...withPaid, dailyBreakdown: parseDaily(bill.dailyBreakdown), items } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Create new laundry bill (as Pending or Paid)
+// Create a laundry bill. status 'Paid' records one payment of the full amount straight away.
 app.post('/api/laundry/bills', (req, res) => {
     const {
         invoiceNo, vendor, date, month, totalQty, totalAmount,
@@ -614,248 +550,133 @@ app.post('/api/laundry/bills', (req, res) => {
         return res.status(400).json({ error: "Missing required fields: invoiceNo, date, or totalAmount" });
     }
 
-    findLaundryDuplicate({ invoiceNo, fileHash }, (checkErr, existing, message) => {
+    findLaundryDuplicate({ invoiceNo, fileHash }, async (checkErr, existing, message) => {
         if (checkErr) return res.status(500).json({ error: checkErr.message });
-        if (existing) {
-            return res.status(409).json({ error: message, duplicate: true, existingBill: existing });
+        if (existing) return res.status(409).json({ error: message, duplicate: true, existingBill: existing });
+
+        try {
+            const dailyStr = typeof dailyBreakdown === 'object' ? JSON.stringify(dailyBreakdown) : (dailyBreakdown || '{}');
+            const inserted = await dbRun(`INSERT INTO laundry_bills (
+                invoiceNo, vendor, date, month, totalQty, totalAmount, status,
+                paidDate, paymentNotes, pdfPath, originalFileName, dailyBreakdown, fileHash
+            ) VALUES (?, ?, ?, ?, ?, ?, 'Pending', NULL, ?, ?, ?, ?, ?)`, [
+                invoiceNo, vendor || 'Shiny Laundry', date, month || '',
+                Number(totalQty || 0), Number(totalAmount || 0),
+                paymentNotes || '', pdfPath || '', originalFileName || '', dailyStr, fileHash || null
+            ]);
+            const billId = inserted.lastID;
+            insertLaundryItems(billId, items);
+
+            if (status === 'Paid' && Number(totalAmount) > 0) {
+                await billPayments.recordPayment('laundry', billId, {
+                    date: paidDate || date, notes: paymentNotes, category: 'Laundry', description: laundryExpenseDesc
+                });
+                return res.json({ message: "Laundry bill saved and marked as paid", data: { id: billId, status: 'Paid' } });
+            }
+            res.json({ message: "Laundry bill saved as pending", data: { id: billId, status: 'Pending' } });
+        } catch (err) {
+            res.status(err.status || 500).json({ error: err.message });
         }
-
-        const isPaid = status === 'Paid';
-        const finalPaidDate = isPaid ? (paidDate || date) : null;
-        const dailyStr = typeof dailyBreakdown === 'object' ? JSON.stringify(dailyBreakdown) : (dailyBreakdown || '{}');
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-
-        const insertSql = `INSERT INTO laundry_bills (
-            invoiceNo, vendor, date, month, totalQty, totalAmount, status,
-            paidDate, paymentNotes, pdfPath, originalFileName, dailyBreakdown, fileHash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-        db.run(insertSql, [
-            invoiceNo, vendor || 'Shiny Laundry', date, month || '',
-            Number(totalQty || 0), Number(totalAmount || 0), isPaid ? 'Paid' : 'Pending',
-            finalPaidDate, paymentNotes || '', pdfPath || '', originalFileName || '', dailyStr, fileHash || null
-        ], function(insertErr) {
-            if (insertErr) {
-                db.run("ROLLBACK");
-                return res.status(500).json({ error: insertErr.message });
-            }
-
-            const newBillId = this.lastID;
-            const lineItems = Array.isArray(items) ? items : [];
-
-            if (lineItems.length > 0) {
-                const itemStmt = db.prepare("INSERT INTO laundry_bill_items (billId, description, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?)");
-                lineItems.forEach(it => {
-                    itemStmt.run([
-                        newBillId,
-                        it.description || 'Linen Item',
-                        Number(it.quantity || 0),
-                        Number(it.unitPrice || 0),
-                        Number(it.amount || 0)
-                    ]);
-                });
-                itemStmt.finalize();
-            }
-
-            if (isPaid) {
-                const desc = `Laundry Bill ${invoiceNo} - ${vendor || 'Shiny Laundry'}${month ? ` (${month})` : ''} - ${totalQty || 0} items`;
-                db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Laundry', ?, ?)",
-                    [finalPaidDate, Number(totalAmount), desc], function(expErr) {
-                    if (expErr) {
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ error: expErr.message });
-                    }
-                    const newExpenseId = this.lastID;
-                    db.run("UPDATE laundry_bills SET expenseId = ? WHERE id = ?", [newExpenseId, newBillId], function(upErr) {
-                        if (upErr) {
-                            db.run("ROLLBACK");
-                            return res.status(500).json({ error: upErr.message });
-                        }
-                        db.run("COMMIT");
-                        res.json({
-                            message: "Laundry bill saved and marked as paid",
-                            data: { id: newBillId, expenseId: newExpenseId, status: 'Paid' }
-                        });
-                    });
-                });
-            } else {
-                db.run("COMMIT");
-                res.json({
-                    message: "Laundry bill saved as pending",
-                    data: { id: newBillId, status: 'Pending' }
-                });
-            }
-        });
-    });
     });
 });
 
-// Mark a pending bill as Paid
-app.post('/api/laundry/bills/:id/pay', (req, res) => {
-    const billId = req.params.id;
-    const { paidDate, paymentNotes } = req.body;
-    const finalPaidDate = paidDate || todayKey();
+// Record a payment (full or part) against a laundry bill
+app.post('/api/laundry/bills/:id/pay', async (req, res) => {
+    try {
+        const result = await billPayments.recordPayment('laundry', req.params.id, {
+            amount: req.body.amount,
+            date: req.body.paidDate || todayKey(),
+            notes: req.body.paymentNotes,
+            category: 'Laundry',
+            description: laundryExpenseDesc
+        });
+        res.json({
+            message: result.status === 'Paid' ? "Bill fully paid and added to expenses" : `Part payment recorded; LKR ${result.balance.toLocaleString()} still due`,
+            data: result
+        });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
 
-    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
+// Remove one payment from a laundry bill
+app.delete('/api/laundry/bills/:id/payments/:paymentId', async (req, res) => {
+    try {
+        const state = await billPayments.deletePayment('laundry', req.params.id, req.params.paymentId);
+        res.json({ message: "Payment removed and its expense deleted", data: state });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Remove all payments: the bill goes back to Pending
+app.post('/api/laundry/bills/:id/unpay', async (req, res) => {
+    try {
+        const bill = await dbGet("SELECT id FROM laundry_bills WHERE id = ?", [req.params.id]);
         if (!bill) return res.status(404).json({ error: "Bill not found" });
-        if (bill.status === 'Paid') return res.status(400).json({ error: "Bill is already marked as paid" });
-
-        const desc = `Laundry Bill ${bill.invoiceNo} - ${bill.vendor || 'Shiny Laundry'}${bill.month ? ` (${bill.month})` : ''} - ${bill.totalQty || 0} items`;
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Laundry', ?, ?)",
-                [finalPaidDate, Number(bill.totalAmount), desc], function(expErr) {
-                if (expErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: expErr.message });
-                }
-                const newExpenseId = this.lastID;
-                const notes = paymentNotes !== undefined ? paymentNotes : (bill.paymentNotes || '');
-                db.run("UPDATE laundry_bills SET status = 'Paid', paidDate = ?, paymentNotes = ?, expenseId = ? WHERE id = ?",
-                    [finalPaidDate, notes, newExpenseId, billId], function(upErr) {
-                    if (upErr) {
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ error: upErr.message });
-                    }
-                    db.run("COMMIT");
-                    res.json({
-                        message: "Bill marked as paid and added to expenses",
-                        data: { id: billId, expenseId: newExpenseId, paidDate: finalPaidDate, status: 'Paid' }
-                    });
-                });
-            });
-        });
-    });
+        const state = await billPayments.clearPayments('laundry', bill.id);
+        res.json({ message: "All payments removed; bill is pending again", data: state });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
 });
 
-// Revert a paid bill back to Pending
-app.post('/api/laundry/bills/:id/unpay', (req, res) => {
+// Update a laundry bill's details. Payments are managed through /pay and the payment routes;
+// the status is recalculated in case the total changed.
+app.put('/api/laundry/bills/:id', async (req, res) => {
     const billId = req.params.id;
-    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!bill) return res.status(404).json({ error: "Bill not found" });
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            if (bill.expenseId) {
-                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
-            }
-            db.run("UPDATE laundry_bills SET status = 'Pending', paidDate = NULL, expenseId = NULL WHERE id = ?", [billId], function(upErr) {
-                if (upErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: upErr.message });
-                }
-                db.run("COMMIT");
-                res.json({ message: "Bill reverted to pending status", data: { id: billId, status: 'Pending' } });
-            });
-        });
-    });
-});
-
-// Update a laundry bill
-app.put('/api/laundry/bills/:id', (req, res) => {
-    const billId = req.params.id;
-    const {
-        invoiceNo, vendor, date, month, totalQty, totalAmount,
-        status, paidDate, paymentNotes, items, dailyBreakdown
-    } = req.body;
-
-    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, existing) => {
-        if (err) return res.status(500).json({ error: err.message });
+    const { invoiceNo, vendor, date, month, totalQty, totalAmount, paymentNotes, items, dailyBreakdown } = req.body;
+    try {
+        const existing = await dbGet("SELECT * FROM laundry_bills WHERE id = ?", [billId]);
         if (!existing) return res.status(404).json({ error: "Bill not found" });
-
-        const isPaid = (status || existing.status) === 'Paid';
-        const finalPaidDate = isPaid ? (paidDate || existing.paidDate || date || existing.date) : null;
-        const dailyStr = dailyBreakdown !== undefined 
+        const dailyStr = dailyBreakdown !== undefined
             ? (typeof dailyBreakdown === 'object' ? JSON.stringify(dailyBreakdown) : dailyBreakdown)
             : existing.dailyBreakdown;
 
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-
-            const updateSql = `UPDATE laundry_bills SET
-                invoiceNo = ?, vendor = ?, date = ?, month = ?, totalQty = ?,
-                totalAmount = ?, status = ?, paidDate = ?, paymentNotes = ?, dailyBreakdown = ?
-                WHERE id = ?`;
-
-            db.run(updateSql, [
-                invoiceNo || existing.invoiceNo,
-                vendor || existing.vendor,
-                date || existing.date,
-                month !== undefined ? month : existing.month,
-                Number(totalQty !== undefined ? totalQty : existing.totalQty),
-                Number(totalAmount !== undefined ? totalAmount : existing.totalAmount),
-                isPaid ? 'Paid' : 'Pending',
-                finalPaidDate,
-                paymentNotes !== undefined ? paymentNotes : existing.paymentNotes,
-                dailyStr,
-                billId
-            ], function(upErr) {
-                if (upErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: upErr.message });
-                }
-
-                // If items are provided, replace them
-                if (Array.isArray(items)) {
-                    db.run("DELETE FROM laundry_bill_items WHERE billId = ?", [billId], (delErr) => {
-                        if (!delErr && items.length > 0) {
-                            const itemStmt = db.prepare("INSERT INTO laundry_bill_items (billId, description, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?)");
-                            items.forEach(it => {
-                                itemStmt.run([
-                                    billId,
-                                    it.description || 'Linen Item',
-                                    Number(it.quantity || 0),
-                                    Number(it.unitPrice || 0),
-                                    Number(it.amount || 0)
-                                ]);
-                            });
-                            itemStmt.finalize();
-                        }
-                    });
-                }
-
-                // Sync linked expense if already paid
-                if (existing.expenseId) {
-                    const desc = `Laundry Bill ${invoiceNo || existing.invoiceNo} - ${vendor || existing.vendor}${month ? ` (${month})` : ''} - ${totalQty || existing.totalQty} items`;
-                    db.run("UPDATE expenses SET date = ?, amount = ?, description = ? WHERE id = ?",
-                        [finalPaidDate, Number(totalAmount || existing.totalAmount), desc, existing.expenseId], () => {});
-                }
-
-                db.run("COMMIT");
-                res.json({ message: "Laundry bill updated successfully" });
-            });
-        });
-    });
+        await dbRun(`UPDATE laundry_bills SET invoiceNo = ?, vendor = ?, date = ?, month = ?, totalQty = ?,
+                     totalAmount = ?, paymentNotes = ?, dailyBreakdown = ? WHERE id = ?`, [
+            invoiceNo || existing.invoiceNo,
+            vendor || existing.vendor,
+            date || existing.date,
+            month !== undefined ? month : existing.month,
+            Number(totalQty !== undefined ? totalQty : existing.totalQty),
+            Number(totalAmount !== undefined ? totalAmount : existing.totalAmount),
+            paymentNotes !== undefined ? paymentNotes : existing.paymentNotes,
+            dailyStr,
+            billId
+        ]);
+        if (Array.isArray(items)) {
+            await dbRun("DELETE FROM laundry_bill_items WHERE billId = ?", [billId]);
+            insertLaundryItems(billId, items);
+        }
+        await billPayments.refreshExpenseDescriptions('laundry', billId, laundryExpenseDesc);
+        const state = await billPayments.refreshStatus('laundry', billId);
+        res.json({ message: "Laundry bill updated successfully", data: state });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Delete a laundry bill
-app.delete('/api/laundry/bills/:id', (req, res) => {
+// Delete a laundry bill together with its payments and their expenses
+app.delete('/api/laundry/bills/:id', async (req, res) => {
     const billId = req.params.id;
-    db.get("SELECT * FROM laundry_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const bill = await dbGet("SELECT id FROM laundry_bills WHERE id = ?", [billId]);
         if (!bill) return res.status(404).json({ error: "Bill not found" });
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            if (bill.expenseId) {
-                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
-            }
-            db.run("DELETE FROM laundry_bill_items WHERE billId = ?", [billId], () => {});
-            db.run("DELETE FROM laundry_bills WHERE id = ?", [billId], function(delErr) {
-                if (delErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: delErr.message });
-                }
-                db.run("COMMIT");
-                res.json({ message: "Laundry bill deleted successfully" });
-            });
-        });
-    });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            await billPayments.clearPayments('laundry', billId, { inTransaction: true });
+            await dbRun("DELETE FROM laundry_bill_items WHERE billId = ?", [billId]);
+            await dbRun("DELETE FROM laundry_bills WHERE id = ?", [billId]);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: "Laundry bill deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- Utility Bills (Electricity, Water, Telecom) ---
@@ -893,9 +714,9 @@ const formatUtilityRow = (row) => {
     return { ...row, charges };
 };
 
-// Previous due = this month's charges of earlier bills on the same account that are still
-// Pending in the app. Provider statements carry their own "Previous Due", but it lags behind
-// actual payments, so it is never stored.
+// Previous due = what is still unpaid on earlier bills of the same account (their balance after
+// any part payments). Provider statements carry their own "Previous Due", but it lags behind
+// actual payments, so it is never stored. Expects rows that already have `balance` (withPayments).
 const withRunningDue = (rows) => {
     const sortKey = (b) => `${b.periodTo || b.date}|${String(b.id).padStart(10, '0')}`;
     const unpaidByAccount = {};
@@ -903,8 +724,9 @@ const withRunningDue = (rows) => {
     [...rows].sort((a, b) => sortKey(a).localeCompare(sortKey(b))).forEach(b => {
         const key = `${b.type}|${b.accountNo || `bill-${b.id}`}`;
         const previousDue = Math.round((unpaidByAccount[key] || 0) * 100) / 100;
-        computed[b.id] = { previousDue, totalDue: Math.round((previousDue + Number(b.totalAmount || 0)) * 100) / 100 };
-        if (b.status !== 'Paid') unpaidByAccount[key] = (unpaidByAccount[key] || 0) + Number(b.totalAmount || 0);
+        const balance = b.balance !== undefined ? Number(b.balance) : Number(b.totalAmount || 0);
+        computed[b.id] = { previousDue, totalDue: Math.round((previousDue + balance) * 100) / 100 };
+        unpaidByAccount[key] = (unpaidByAccount[key] || 0) + balance;
     });
     return rows.map(b => ({ ...formatUtilityRow(b), ...computed[b.id] }));
 };
@@ -972,33 +794,36 @@ app.post('/api/utilities/upload-preview', uploadPdf.single('file'), async (req, 
     }
 });
 
-// Get utility bills, optionally filtered by type
-app.get('/api/utilities/bills', (req, res) => {
+// Get utility bills (with payments and running dues), optionally filtered by type
+app.get('/api/utilities/bills', async (req, res) => {
     const { type } = req.query;
-    const sql = type
-        ? "SELECT * FROM utility_bills WHERE type = ? ORDER BY date DESC, id DESC"
-        : "SELECT * FROM utility_bills ORDER BY date DESC, id DESC";
-    db.all(sql, type ? [type] : [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ data: withRunningDue(rows || []) });
-    });
+    try {
+        const rows = await dbAll(
+            type ? "SELECT * FROM utility_bills WHERE type = ? ORDER BY date DESC, id DESC" : "SELECT * FROM utility_bills ORDER BY date DESC, id DESC",
+            type ? [type] : []
+        );
+        res.json({ data: withRunningDue(await billPayments.withPayments('utility', rows)) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Get single utility bill
-app.get('/api/utilities/bills/:id', (req, res) => {
-    db.get("SELECT * FROM utility_bills WHERE id = ?", [req.params.id], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/utilities/bills/:id', async (req, res) => {
+    try {
+        const bill = await dbGet("SELECT * FROM utility_bills WHERE id = ?", [req.params.id]);
         if (!bill) return res.status(404).json({ error: "Bill not found" });
-        if (!bill.accountNo) return res.json({ data: withRunningDue([bill])[0] });
-
-        db.all("SELECT * FROM utility_bills WHERE type = ? AND accountNo = ?", [bill.type, bill.accountNo], (accErr, rows) => {
-            if (accErr) return res.status(500).json({ error: accErr.message });
-            res.json({ data: withRunningDue(rows).find(r => r.id === bill.id) });
-        });
-    });
+        const rows = bill.accountNo
+            ? await dbAll("SELECT * FROM utility_bills WHERE type = ? AND accountNo = ?", [bill.type, bill.accountNo])
+            : [bill];
+        const enriched = withRunningDue(await billPayments.withPayments('utility', rows));
+        res.json({ data: enriched.find(r => r.id === bill.id) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Create new utility bill (as Pending or Paid)
+// Create a utility bill. status 'Paid' records one payment of the full amount straight away.
 app.post('/api/utilities/bills', (req, res) => {
     const {
         type, billNo, provider, accountNo, tariff, premises, date, month, periodFrom, periodTo, dueDate,
@@ -1013,149 +838,91 @@ app.post('/api/utilities/bills', (req, res) => {
         return res.status(400).json({ error: "Missing required fields: billNo, date, or totalAmount" });
     }
 
-    findUtilityDuplicate({ type, billNo, accountNo, month, fileHash }, null, (checkErr, existing, message) => {
+    findUtilityDuplicate({ type, billNo, accountNo, month, fileHash }, null, async (checkErr, existing, message) => {
         if (checkErr) return res.status(500).json({ error: checkErr.message });
-        if (existing) {
-            return res.status(409).json({ error: message, duplicate: true, existingBill: existing });
-        }
+        if (existing) return res.status(409).json({ error: message, duplicate: true, existingBill: existing });
 
-        const isPaid = status === 'Paid';
-        const finalPaidDate = isPaid ? (paidDate || date) : null;
-        const chargesStr = JSON.stringify(Array.isArray(charges) ? charges : []);
-        const bill = {
-            type, billNo, provider: provider || '', month: month || '',
-            accountNo: accountNo || '', premises: premises || '',
-            unitsUsed: toNullableNumber(unitsUsed)
-        };
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-
-            const insertSql = `INSERT INTO utility_bills (
+        try {
+            const inserted = await dbRun(`INSERT INTO utility_bills (
                 type, billNo, provider, accountNo, tariff, premises, date, month, periodFrom, periodTo, dueDate,
                 previousReading, currentReading, unitsUsed, totalAmount, charges,
                 status, paidDate, paymentNotes, originalFileName, fileHash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-            db.run(insertSql, [
-                type, billNo, bill.provider, accountNo || '', tariff || '', premises || '', date, bill.month,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', NULL, ?, ?, ?)`, [
+                type, billNo, provider || '', accountNo || '', tariff || '', premises || '', date, month || '',
                 periodFrom || null, periodTo || null, dueDate || null,
-                toNullableNumber(previousReading), toNullableNumber(currentReading), bill.unitsUsed,
-                Number(totalAmount || 0), chargesStr,
-                isPaid ? 'Paid' : 'Pending', finalPaidDate, paymentNotes || '', originalFileName || '', fileHash || null
-            ], function(insertErr) {
-                if (insertErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: insertErr.message });
-                }
-                const newBillId = this.lastID;
+                toNullableNumber(previousReading), toNullableNumber(currentReading), toNullableNumber(unitsUsed),
+                Number(totalAmount || 0), JSON.stringify(Array.isArray(charges) ? charges : []),
+                paymentNotes || '', originalFileName || '', fileHash || null
+            ]);
+            const billId = inserted.lastID;
 
-                if (!isPaid) {
-                    db.run("COMMIT");
-                    return res.json({
-                        message: "Utility bill saved as pending",
-                        data: { id: newBillId, status: 'Pending' }
-                    });
-                }
-
-                db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, ?, ?, ?)",
-                    [finalPaidDate, utilityExpenseCategory(type), Number(totalAmount), utilityExpenseDesc(bill)], function(expErr) {
-                    if (expErr) {
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ error: expErr.message });
-                    }
-                    const newExpenseId = this.lastID;
-                    db.run("UPDATE utility_bills SET expenseId = ? WHERE id = ?", [newExpenseId, newBillId], function(upErr) {
-                        if (upErr) {
-                            db.run("ROLLBACK");
-                            return res.status(500).json({ error: upErr.message });
-                        }
-                        db.run("COMMIT");
-                        res.json({
-                            message: "Utility bill saved and marked as paid",
-                            data: { id: newBillId, expenseId: newExpenseId, status: 'Paid' }
-                        });
-                    });
+            if (status === 'Paid' && Number(totalAmount) > 0) {
+                await billPayments.recordPayment('utility', billId, {
+                    date: paidDate || date, notes: paymentNotes, category: utilityExpenseCategory(type), description: utilityExpenseDesc
                 });
-            });
-        });
-    });
-});
-
-// Mark a pending utility bill as Paid
-app.post('/api/utilities/bills/:id/pay', (req, res) => {
-    const billId = req.params.id;
-    const { paidDate, paymentNotes } = req.body;
-    const finalPaidDate = paidDate || todayKey();
-
-    db.get("SELECT * FROM utility_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!bill) return res.status(404).json({ error: "Bill not found" });
-        if (bill.status === 'Paid') return res.status(400).json({ error: "Bill is already marked as paid" });
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            db.run("INSERT INTO expenses (date, category, amount, description) VALUES (?, ?, ?, ?)",
-                [finalPaidDate, utilityExpenseCategory(bill.type), Number(bill.totalAmount), utilityExpenseDesc(bill)], function(expErr) {
-                if (expErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: expErr.message });
-                }
-                const newExpenseId = this.lastID;
-                const notes = paymentNotes !== undefined ? paymentNotes : (bill.paymentNotes || '');
-                db.run("UPDATE utility_bills SET status = 'Paid', paidDate = ?, paymentNotes = ?, expenseId = ? WHERE id = ?",
-                    [finalPaidDate, notes, newExpenseId, billId], function(upErr) {
-                    if (upErr) {
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ error: upErr.message });
-                    }
-                    db.run("COMMIT");
-                    res.json({
-                        message: "Bill marked as paid and added to expenses",
-                        data: { id: billId, expenseId: newExpenseId, paidDate: finalPaidDate, status: 'Paid' }
-                    });
-                });
-            });
-        });
-    });
-});
-
-// Revert a paid utility bill back to Pending
-app.post('/api/utilities/bills/:id/unpay', (req, res) => {
-    const billId = req.params.id;
-    db.get("SELECT * FROM utility_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!bill) return res.status(404).json({ error: "Bill not found" });
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            if (bill.expenseId) {
-                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
+                return res.json({ message: "Utility bill saved and marked as paid", data: { id: billId, status: 'Paid' } });
             }
-            db.run("UPDATE utility_bills SET status = 'Pending', paidDate = NULL, expenseId = NULL WHERE id = ?", [billId], function(upErr) {
-                if (upErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: upErr.message });
-                }
-                db.run("COMMIT");
-                res.json({ message: "Bill reverted to pending status", data: { id: billId, status: 'Pending' } });
-            });
-        });
+            res.json({ message: "Utility bill saved as pending", data: { id: billId, status: 'Pending' } });
+        } catch (err) {
+            res.status(err.status || 500).json({ error: err.message });
+        }
     });
 });
 
-// Update a utility bill
-app.put('/api/utilities/bills/:id', (req, res) => {
-    const billId = req.params.id;
+// Record a payment (full or part) against a utility bill
+app.post('/api/utilities/bills/:id/pay', async (req, res) => {
+    try {
+        const bill = await dbGet("SELECT type FROM utility_bills WHERE id = ?", [req.params.id]);
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+        const result = await billPayments.recordPayment('utility', req.params.id, {
+            amount: req.body.amount,
+            date: req.body.paidDate || todayKey(),
+            notes: req.body.paymentNotes,
+            category: utilityExpenseCategory(bill.type),
+            description: utilityExpenseDesc
+        });
+        res.json({
+            message: result.status === 'Paid' ? "Bill fully paid and added to expenses" : `Part payment recorded; LKR ${result.balance.toLocaleString()} still due`,
+            data: result
+        });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
 
-    db.get("SELECT * FROM utility_bills WHERE id = ?", [billId], (err, existing) => {
-        if (err) return res.status(500).json({ error: err.message });
+// Remove one payment from a utility bill
+app.delete('/api/utilities/bills/:id/payments/:paymentId', async (req, res) => {
+    try {
+        const state = await billPayments.deletePayment('utility', req.params.id, req.params.paymentId);
+        res.json({ message: "Payment removed and its expense deleted", data: state });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Remove all payments: the bill goes back to Pending
+app.post('/api/utilities/bills/:id/unpay', async (req, res) => {
+    try {
+        const bill = await dbGet("SELECT id FROM utility_bills WHERE id = ?", [req.params.id]);
+        if (!bill) return res.status(404).json({ error: "Bill not found" });
+        const state = await billPayments.clearPayments('utility', bill.id);
+        res.json({ message: "All payments removed; bill is pending again", data: state });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Update a utility bill's details. Payments are managed through /pay and the payment routes;
+// the status is recalculated in case the total changed.
+app.put('/api/utilities/bills/:id', async (req, res) => {
+    const billId = req.params.id;
+    try {
+        const existing = await dbGet("SELECT * FROM utility_bills WHERE id = ?", [billId]);
         if (!existing) return res.status(404).json({ error: "Bill not found" });
 
         // Fields absent from the body keep their stored value
         const pick = (field) => req.body[field] !== undefined ? req.body[field] : existing[field];
         const pickNumber = (field) => req.body[field] !== undefined ? toNullableNumber(req.body[field]) : existing[field];
-
         const merged = {
             type: existing.type,
             billNo: pick('billNo') || existing.billNo,
@@ -1175,73 +942,50 @@ app.put('/api/utilities/bills/:id', (req, res) => {
             charges: req.body.charges !== undefined ? JSON.stringify(Array.isArray(req.body.charges) ? req.body.charges : []) : existing.charges,
             paymentNotes: pick('paymentNotes')
         };
-        // Paid status changes go through /pay and /unpay so the linked expense stays consistent
-        const finalPaidDate = existing.status === 'Paid' ? (req.body.paidDate || existing.paidDate) : null;
 
-        findUtilityDuplicate(merged, billId, (dupErr, duplicate, message) => {
-            if (dupErr) return res.status(500).json({ error: dupErr.message });
-            if (duplicate) {
-                return res.status(409).json({ error: message, duplicate: true, existingBill: duplicate });
-            }
+        const duplicate = await new Promise((resolve, reject) =>
+            findUtilityDuplicate(merged, billId, (err, dup, message) => err ? reject(err) : resolve(dup ? { dup, message } : null)));
+        if (duplicate) return res.status(409).json({ error: duplicate.message, duplicate: true, existingBill: duplicate.dup });
 
-            db.serialize(() => {
-                db.run("BEGIN TRANSACTION");
-
-                const updateSql = `UPDATE utility_bills SET
-                    billNo = ?, provider = ?, accountNo = ?, tariff = ?, premises = ?, date = ?, month = ?,
-                    periodFrom = ?, periodTo = ?, dueDate = ?,
-                    previousReading = ?, currentReading = ?, unitsUsed = ?,
-                    totalAmount = ?, charges = ?, paidDate = ?, paymentNotes = ?
-                    WHERE id = ?`;
-
-                db.run(updateSql, [
-                    merged.billNo, merged.provider, merged.accountNo, merged.tariff, merged.premises, merged.date, merged.month,
-                    merged.periodFrom, merged.periodTo, merged.dueDate,
-                    merged.previousReading, merged.currentReading, merged.unitsUsed,
-                    merged.totalAmount, merged.charges, finalPaidDate, merged.paymentNotes,
-                    billId
-                ], function(upErr) {
-                    if (upErr) {
-                        db.run("ROLLBACK");
-                        return res.status(500).json({ error: upErr.message });
-                    }
-
-                    // Sync linked expense if already paid
-                    if (existing.expenseId) {
-                        db.run("UPDATE expenses SET date = ?, amount = ?, description = ? WHERE id = ?",
-                            [finalPaidDate, merged.totalAmount, utilityExpenseDesc(merged), existing.expenseId], () => {});
-                    }
-
-                    db.run("COMMIT");
-                    res.json({ message: "Utility bill updated successfully" });
-                });
-            });
-        });
-    });
+        await dbRun(`UPDATE utility_bills SET
+            billNo = ?, provider = ?, accountNo = ?, tariff = ?, premises = ?, date = ?, month = ?,
+            periodFrom = ?, periodTo = ?, dueDate = ?,
+            previousReading = ?, currentReading = ?, unitsUsed = ?,
+            totalAmount = ?, charges = ?, paymentNotes = ?
+            WHERE id = ?`, [
+            merged.billNo, merged.provider, merged.accountNo, merged.tariff, merged.premises, merged.date, merged.month,
+            merged.periodFrom, merged.periodTo, merged.dueDate,
+            merged.previousReading, merged.currentReading, merged.unitsUsed,
+            merged.totalAmount, merged.charges, merged.paymentNotes,
+            billId
+        ]);
+        await billPayments.refreshExpenseDescriptions('utility', billId, utilityExpenseDesc);
+        const state = await billPayments.refreshStatus('utility', billId);
+        res.json({ message: "Utility bill updated successfully", data: state });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Delete a utility bill
-app.delete('/api/utilities/bills/:id', (req, res) => {
+// Delete a utility bill together with its payments and their expenses
+app.delete('/api/utilities/bills/:id', async (req, res) => {
     const billId = req.params.id;
-    db.get("SELECT * FROM utility_bills WHERE id = ?", [billId], (err, bill) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const bill = await dbGet("SELECT id FROM utility_bills WHERE id = ?", [billId]);
         if (!bill) return res.status(404).json({ error: "Bill not found" });
-
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION");
-            if (bill.expenseId) {
-                db.run("DELETE FROM expenses WHERE id = ?", [bill.expenseId], () => {});
-            }
-            db.run("DELETE FROM utility_bills WHERE id = ?", [billId], function(delErr) {
-                if (delErr) {
-                    db.run("ROLLBACK");
-                    return res.status(500).json({ error: delErr.message });
-                }
-                db.run("COMMIT");
-                res.json({ message: "Utility bill deleted successfully" });
-            });
-        });
-    });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            await billPayments.clearPayments('utility', billId, { inTransaction: true });
+            await dbRun("DELETE FROM utility_bills WHERE id = ?", [billId]);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: "Utility bill deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // --- Staff & Salary Payments ---
@@ -1340,12 +1084,25 @@ app.post('/api/staff-payments', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!staff) return res.status(404).json({ error: "Staff member not found" });
 
-        // Keep the salary snapshot consistent within a month: reuse the first payment's figure
-        db.get("SELECT salaryForMonth FROM staff_payments WHERE staffId = ? AND month = ? AND salaryForMonth IS NOT NULL ORDER BY id LIMIT 1",
-            [staff.id, month], (snapErr, snap) => {
+        // Keep the salary snapshot consistent within a month: reuse the first payment's figure.
+        // Also total what has already gone out this month (advances + salary; bonuses are separate).
+        db.get(`SELECT
+                    (SELECT salaryForMonth FROM staff_payments WHERE staffId = ? AND month = ? AND salaryForMonth IS NOT NULL ORDER BY id LIMIT 1) AS snapshot,
+                    (SELECT COALESCE(SUM(amount), 0) FROM staff_payments WHERE staffId = ? AND month = ? AND type IN ('advance', 'salary')) AS paidSoFar`,
+            [staff.id, month, staff.id, month], (snapErr, snap) => {
             if (snapErr) return res.status(500).json({ error: snapErr.message });
-            const salaryForMonth = snap ? snap.salaryForMonth : staff.monthlySalary;
+            const salaryForMonth = snap.snapshot !== null ? snap.snapshot : staff.monthlySalary;
             const cleanNotes = (notes || '').trim();
+
+            // An advance can never exceed what is left of the month's salary
+            const remaining = Math.round((salaryForMonth - snap.paidSoFar) * 100) / 100;
+            if (type === 'advance' && amount > remaining + 0.009) {
+                return res.status(400).json({
+                    error: remaining > 0
+                        ? `An advance can't be more than the salary balance left for ${monthLabel(month)} (LKR ${remaining.toLocaleString()}).`
+                        : `${staff.name}'s salary for ${monthLabel(month)} has already been fully paid or advanced, so no further advance can be given.`
+                });
+            }
 
             db.serialize(() => {
                 db.run("BEGIN TRANSACTION");
@@ -1701,7 +1458,6 @@ const DEFAULT_REMINDER_SETTINGS = {
     checkouts: { enabled: true }
 };
 
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows)));
 const getSettingAsync = (key) => new Promise((resolve, reject) => getSetting(key, (err, value) => err ? reject(err) : resolve(value)));
 const setSettingAsync = (key, value) => new Promise((resolve, reject) => setSetting(key, value, (err) => err ? reject(err) : resolve()));
 
@@ -1800,39 +1556,42 @@ const buildNotifications = async () => {
         }
     }
 
-    // 3. Unpaid utility bills that are due soon or overdue
+    // 3. Utility bills not fully paid that are due soon or overdue (part payments reduce the amount shown)
     const dueSoonDays = Math.max(0, Number(settings.dueSoonDays) || 0);
     const horizon = addDaysIso(today, dueSoonDays);
     const unpaid = await dbAll(
-        "SELECT id, type, billNo, accountNo, month, dueDate, totalAmount FROM utility_bills WHERE status != 'Paid' AND dueDate IS NOT NULL AND dueDate != '' AND dueDate <= ?",
+        `SELECT b.id, b.type, b.billNo, b.accountNo, b.month, b.dueDate, b.totalAmount,
+                (SELECT COALESCE(SUM(p.amount), 0) FROM bill_payments p WHERE p.billKind = 'utility' AND p.billId = b.id) AS paid
+         FROM utility_bills b WHERE b.status != 'Paid' AND b.dueDate IS NOT NULL AND b.dueDate != '' AND b.dueDate <= ?`,
         [horizon]
     );
     unpaid.forEach(b => {
         const label = UTILITY_LABELS[b.type] || 'Utility';
         const overdue = b.dueDate < today;
+        const balance = Math.round((Number(b.totalAmount || 0) - Number(b.paid || 0)) * 100) / 100;
         items.push({
             id: `bill-due-${b.id}`,
             kind: 'bill-due',
             severity: overdue ? 'overdue' : 'due',
             title: `${label} bill ${overdue ? 'overdue' : b.dueDate === today ? 'due today' : 'due soon'}`,
-            detail: `${b.month || b.billNo}${b.accountNo ? ` · A/C ${b.accountNo}` : ''} · LKR ${Number(b.totalAmount || 0).toLocaleString()} — mark it paid once settled.`,
+            detail: `${b.month || b.billNo}${b.accountNo ? ` · A/C ${b.accountNo}` : ''} · LKR ${balance.toLocaleString()} ${b.paid > 0 ? 'still due' : 'due'} — record the payment once paid.`,
             date: b.dueDate,
             link: `/utilities/${b.type}`
         });
     });
 
-    // 4. Guest checkouts to confirm (with the balance settled). Only checkouts from the day this
-    //    reminder was first used are flagged, so older bookings never flood the list.
+    // 4. Guest balances still owed on or after the checkout day; cleared once the booking is settled
+    //    in full. Only stays checking out from the day this reminder was first used are flagged,
+    //    so older bookings never flood the list.
     if (settings.checkouts.enabled) {
-        let checkoutStart = await getSettingAsync('checkoutRemindersStartDate');
-        if (!checkoutStart) {
-            checkoutStart = today;
-            await setSettingAsync('checkoutRemindersStartDate', checkoutStart);
+        let reminderStart = await getSettingAsync('checkoutRemindersStartDate');
+        if (!reminderStart) {
+            reminderStart = today;
+            await setSettingAsync('checkoutRemindersStartDate', reminderStart);
         }
         const rows = await dbAll(
-            `SELECT * FROM reservations WHERE checkOutDate >= ? AND checkOutDate <= ?
-             AND (checkedOutAt IS NULL OR checkedOutAt = '') ORDER BY checkOutDate`,
-            [checkoutStart, today]
+            "SELECT * FROM reservations WHERE checkOutDate >= ? AND checkOutDate <= ? ORDER BY checkOutDate",
+            [reminderStart, today]
         );
         const groups = {};
         rows.forEach(r => {
@@ -1842,16 +1601,16 @@ const buildNotifications = async () => {
         Object.entries(groups).forEach(([key, groupRows]) => {
             const first = groupRows[0];
             const { pending } = groupPaymentState(groupRows);
-            const rooms = groupRows.map(r => r.roomName).join(', ');
+            if (pending <= 0.05) return;
             const isToday = first.checkOutDate === today;
             items.push({
-                id: `checkout-${key}`,
-                kind: 'checkout',
+                id: `settle-${key}`,
+                kind: 'settle',
                 severity: isToday ? 'due' : 'overdue',
-                title: `${isToday ? 'Checkout today' : 'Checkout not confirmed'}: ${first.guestName}`,
-                detail: `${rooms} · ${pending > 0.05 ? `balance LKR ${pending.toLocaleString()} to settle` : 'fully paid'} — confirm the checkout.`,
+                title: `Balance due: ${first.guestName}`,
+                detail: `${groupRows.map(r => r.roomName).join(', ')} · LKR ${pending.toLocaleString()} ${isToday ? '— leaving today' : 'still owed'}. Settle the payment.`,
                 date: first.checkOutDate,
-                link: `/?checkout=${encodeURIComponent(key)}`
+                link: `/?settle=${encodeURIComponent(key)}`
             });
         });
     }
@@ -2146,55 +1905,20 @@ setTimeout(async () => {
     }
 }, 5000);
 
-// One-time tidy-up when checkout confirmation was introduced: bookings that had already ended
-// before that day and are fully paid are marked checked out on their own checkout date.
-// Ended bookings with a balance are left alone so they can be settled and checked out properly.
-// Guarded by a settings flag so it never runs again (otherwise it would silently confirm
-// checkouts the user forgot, defeating the checkout reminders).
-const backfillPastCheckouts = async () => {
+// Bills marked Paid before part payments existed have one linked expense but no payment rows.
+// Convert each into a single full payment so balances and Financials stay exactly the same.
+// Only touches Paid bills without payment rows, so it is safe to run on every start.
+const migrateLegacyBillPayments = async () => {
     try {
-        if (await getSettingAsync('checkoutBackfillDone')) return;
-        const columns = await dbAll("PRAGMA table_info(reservations)");
-        if (!columns.some(c => c.name === 'checkedOutAt')) {
-            console.warn('Checkout backfill skipped: reservations.checkedOutAt column not found; will retry on next start.');
-            return;
-        }
-
-        const cutoff = todayKey();
-        const rows = await dbAll(
-            "SELECT * FROM reservations WHERE checkOutDate < ? AND (checkedOutAt IS NULL OR checkedOutAt = '')",
-            [cutoff]
-        );
-        const groups = {};
-        rows.forEach(r => {
-            const key = r.groupId || String(r.id);
-            (groups[key] = groups[key] || []).push(r);
-        });
-
-        let marked = 0;
-        let leftWithBalance = 0;
-        for (const groupRows of Object.values(groups)) {
-            if (groupPaymentState(groupRows).pending > 0.05) {
-                leftWithBalance++;
-                continue;
-            }
-            const ids = groupRows.map(r => r.id);
-            await new Promise((resolve, reject) => db.run(
-                `UPDATE reservations SET checkedOutAt = checkOutDate WHERE id IN (${ids.map(() => '?').join(',')})`,
-                ids, (err) => err ? reject(err) : resolve()
-            ));
-            marked++;
-        }
-
-        await setSettingAsync('checkoutBackfillDone', JSON.stringify({ ranOn: cutoff, marked, leftWithBalance }));
-        console.log(`Checkout backfill: marked ${marked} past fully-paid booking(s) as checked out; ${leftWithBalance} past booking(s) with a balance left for review.`);
+        const converted = await billPayments.migrateLegacyPaidBills();
+        if (converted > 0) console.log(`Bill payments: converted ${converted} previously paid bill(s) into payment records.`);
     } catch (err) {
-        console.error('Checkout backfill failed (will retry on next start):', err.message);
+        console.error('Bill payment migration failed (will retry on next start):', err.message);
     }
 };
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    // Wait for db.js to finish its startup migrations before touching reservations
-    db.ready.then(backfillPastCheckouts);
+    // Wait for db.js to finish its startup migrations before touching bills
+    db.ready.then(migrateLegacyBillPayments);
 });

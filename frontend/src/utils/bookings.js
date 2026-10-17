@@ -7,13 +7,22 @@ export const STATUS_STYLES = {
     paid: { label: 'Fully paid', color: '#16a34a' },
     partial: { label: 'Advance paid', color: '#d97706' },
     unpaid: { label: 'Not paid', color: '#dc2626' },
-    checkedOut: { label: 'Checked out', color: '#94a3b8' }
+    completed: { label: 'Stay completed', color: '#94a3b8' }
+};
+
+// Bookings that haven't started yet get a colour of their own per guest, so neighbouring future
+// stays are easy to tell apart; payment colours apply from check-in onwards.
+export const guestColor = (name) => {
+    let hash = 0;
+    for (let i = 0; i < (name || '').length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return `hsl(${Math.abs(hash % 360)}, 65%, 45%)`;
 };
 
 // Collapse per-room reservation rows into one entry per booking (group), with payment totals.
 // Payments are stored split per room on every row, so the first row's list × rooms is the group total,
 // matching Financials. Older rows may only carry advancedAmount.
-export function groupReservations(reservations) {
+// Status follows the dates: a fully paid stay whose check-out day has come is "completed".
+export function groupReservations(reservations, today = startOfDay(new Date())) {
     const groups = {};
     reservations.forEach(r => {
         const key = r.groupId || String(r.id);
@@ -32,8 +41,9 @@ export function groupReservations(reservations) {
         const pending = Math.round((total - paid) * 100) / 100;
         const checkIn = startOfDay(parseISO(first.checkInDate));
         const checkOut = startOfDay(parseISO(first.checkOutDate));
-        const checkedOutAt = rows.map(r => r.checkedOutAt).find(Boolean) || null;
-        const status = checkedOutAt ? 'checkedOut' : pending <= 0.05 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+        const upcoming = checkIn > today;
+        const ended = checkOut <= today;
+        const status = pending > 0.05 ? (paid > 0 ? 'partial' : 'unpaid') : ended ? 'completed' : 'paid';
 
         return {
             key,
@@ -52,8 +62,11 @@ export function groupReservations(reservations) {
             total,
             paid,
             pending,
-            checkedOutAt,
-            status
+            upcoming,
+            ended,
+            status,
+            // Calendar/card colour: per-guest before check-in, payment status from check-in on
+            color: upcoming ? guestColor(first.guestName) : STATUS_STYLES[status].color
         };
     });
 }

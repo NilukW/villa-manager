@@ -5,6 +5,8 @@
 #   ./deploy.sh update     Release new code to a running server (default):
 #                          backup DB -> git pull -> install -> build -> restart -> health check
 #   ./deploy.sh rollback   Restore the code version and database from before the last update
+#   ./deploy.sh domain <domain> <email>
+#                          Serve the app on a domain with HTTPS (Let's Encrypt, auto-renewing)
 #
 # Run from anywhere; the script works from its own folder (the repo root).
 
@@ -129,12 +131,17 @@ cmd_setup() {
 
     log "Nginx"
     sudo rm -f /etc/nginx/sites-enabled/default
+    # Once a domain/HTTPS has been set up (./deploy.sh domain), Certbot owns parts of this file;
+    # rewriting it would silently switch the site back to plain HTTP.
+    if [ -f "$NGINX_SITE" ] && grep -q "managed by Certbot" "$NGINX_SITE"; then
+        warn "Keeping existing Nginx config (HTTPS is configured)."
+    else
     cat << 'EOF' | sudo tee "$NGINX_SITE" > /dev/null
 server {
     listen 80;
     server_name _;
 
-    root /home/YOUR_USERNAME/villa-manager/frontend/dist;
+    root FRONTEND_DIST;
     index index.html;
 
     location = /index.html {
@@ -155,8 +162,10 @@ server {
     }
 }
 EOF
+    sudo sed -i "s|FRONTEND_DIST|$FRONTEND/dist|g" "$NGINX_SITE"
+    fi
+    # Nginx must be able to traverse the home directory to reach frontend/dist
     chmod 755 "/home/$(whoami)"
-    sudo sed -i "s|YOUR_USERNAME|$(whoami)|g" "$NGINX_SITE"
     sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/villamanager
     sudo nginx -t && sudo systemctl restart nginx
 
@@ -242,9 +251,58 @@ cmd_rollback() {
     warn "The repo is now on a detached commit ($PREV_COMMIT). Run 'git checkout main' before the next update."
 }
 
+# Point a domain at the app and switch on HTTPS (free Let's Encrypt certificate, renewed automatically).
+# Before running: the domain's DNS A record(s) must already point to this VM's static external IP,
+# and the VM must allow HTTP and HTTPS traffic (GCP firewall).
+cmd_domain() {
+    local domain="${1:-}" email="${2:-}"
+    [ -n "$domain" ] && [ -n "$email" ] || fail "Usage: $0 domain <domain> <email for certificate expiry notices>"
+    domain="${domain#http://}"; domain="${domain#https://}"; domain="${domain%%/*}"
+    [ -f "$NGINX_SITE" ] || fail "Nginx is not configured yet. Run '$0 setup' first."
+
+    log "Checking DNS"
+    local vm_ip dns_ip www_ip names
+    vm_ip=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" || true)
+    [ -n "$vm_ip" ] || vm_ip=$(curl -s https://api.ipify.org || true)
+    dns_ip=$(getent ahostsv4 "$domain" | awk 'NR==1 {print $1}' || true)
+    www_ip=$(getent ahostsv4 "www.$domain" | awk 'NR==1 {print $1}' || true)
+    echo "This VM:        ${vm_ip:-unknown}"
+    echo "$domain -> ${dns_ip:-not found}"
+    echo "www.$domain -> ${www_ip:-not found}"
+    [ -n "$dns_ip" ] || fail "$domain does not resolve yet. Add an A record pointing to ${vm_ip:-the VM IP} and wait for DNS to update."
+    [ -z "$vm_ip" ] || [ "$dns_ip" = "$vm_ip" ] || fail "$domain points to $dns_ip, not this VM ($vm_ip). Fix the A record first."
+
+    # Include www only when it also points here, otherwise the certificate request would fail
+    names=("$domain")
+    if [ -n "$www_ip" ] && { [ -z "$vm_ip" ] || [ "$www_ip" = "$vm_ip" ]; }; then
+        names+=("www.$domain")
+    else
+        warn "www.$domain does not point here - setting up $domain only."
+    fi
+
+    log "Setting the site name in Nginx"
+    sudo sed -i "0,/server_name .*;/s//server_name ${names[*]};/" "$NGINX_SITE"
+    sudo nginx -t && sudo systemctl reload nginx
+
+    log "Requesting HTTPS certificate"
+    sudo apt install -y certbot python3-certbot-nginx
+    local cert_args=()
+    for n in "${names[@]}"; do cert_args+=(-d "$n"); done
+    sudo certbot --nginx "${cert_args[@]}" --redirect --agree-tos -m "$email" --non-interactive
+
+    log "Checking"
+    curl -s -o /dev/null -w "https://$domain -> HTTP %{http_code}\n" "https://$domain/" || warn "Could not reach https://$domain from the VM."
+    sudo certbot renew --dry-run > /dev/null 2>&1 && echo "Automatic certificate renewal: OK" || warn "Renewal dry-run failed; check 'sudo certbot renew --dry-run'."
+    echo "====================================================="
+    echo "Done. Open https://$domain"
+    echo "http:// and the IP address now redirect to https://$domain"
+    echo "====================================================="
+}
+
 case "${1:-update}" in
     setup)    cmd_setup ;;
     update)   cmd_update ;;
     rollback) cmd_rollback ;;
-    *) echo "Usage: $0 [setup|update|rollback]"; exit 1 ;;
+    domain)   shift; cmd_domain "$@" ;;
+    *) echo "Usage: $0 [setup|update|rollback|domain <domain> <email>]"; exit 1 ;;
 esac

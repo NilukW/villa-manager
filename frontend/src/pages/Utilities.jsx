@@ -8,6 +8,7 @@ import {
 import { fetchWithAuth } from '../utils/api';
 import ProcessingOverlay, { ButtonSpinner } from '../components/ProcessingOverlay';
 import { notifyDataChanged } from '../utils/notifications';
+import { BillStatusBadge, isBillOverdue, PaidDueLine, PayBillModal, PaymentsList } from '../components/BillPayments';
 
 const UTILITY_TYPES = {
     electricity: { label: 'Electricity', icon: Zap, color: '#f59e0b', unit: 'kWh', hasMeter: true, providerHint: 'e.g. EDL, CEB, LECO' },
@@ -64,26 +65,8 @@ const readJson = async (res) => {
     }
 };
 
-const isOverdue = (bill) => bill.status !== 'Paid' && bill.dueDate && bill.dueDate < today();
-
-const StatusBadge = ({ bill }) => {
-    const styles = bill.status === 'Paid'
-        ? { bg: '#dcfce7', fg: '#15803d', Icon: CheckCircle2, text: 'Paid' }
-        : isOverdue(bill)
-            ? { bg: '#fee2e2', fg: '#b91c1c', Icon: AlertCircle, text: 'Overdue' }
-            : { bg: '#fef3c7', fg: '#b45309', Icon: Clock, text: 'Pending' };
-    const { Icon } = styles;
-    return (
-        <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
-            padding: '0.25rem 0.6rem', borderRadius: '1rem',
-            backgroundColor: styles.bg, color: styles.fg,
-            fontSize: '0.8rem', fontWeight: 600
-        }}>
-            <Icon size={13} /> {styles.text}
-        </span>
-    );
-};
+const isOverdue = isBillOverdue;
+const StatusBadge = BillStatusBadge;
 
 export default function Utilities() {
     const { type } = useParams();
@@ -114,8 +97,6 @@ function UtilityBillsPage({ utilityType }) {
     // Modals
     const [viewingBill, setViewingBill] = useState(null);
     const [payingBill, setPayingBill] = useState(null);
-    const [paymentData, setPaymentData] = useState({ paidDate: today(), paymentNotes: '' });
-    const [isPaying, setIsPaying] = useState(false);
 
     const config = UTILITY_TYPES[utilityType];
     const TypeIcon = config.icon;
@@ -272,35 +253,22 @@ function UtilityBillsPage({ utilityType }) {
         }
     };
 
-    const handleConfirmPayment = async () => {
-        if (!payingBill || isPaying) return;
-        setIsPaying(true);
-        try {
-            const res = await fetchWithAuth(`/api/utilities/bills/${payingBill.id}/pay`, {
-                method: 'POST',
-                body: JSON.stringify(paymentData)
-            });
-            if (!res.ok) {
-                const errData = await readJson(res);
-                throw new Error(errData.error || 'Failed to mark bill as paid');
-            }
-            await fetchBills();
-            setPayingBill(null);
-        } catch (err) {
-            alert('Payment failed: ' + err.message);
-        } finally {
-            setIsPaying(false);
-        }
-    };
-
     const openPayModal = (bill) => {
         setViewingBill(null);
         setPayingBill(bill);
-        setPaymentData({ paidDate: today(), paymentNotes: '' });
+    };
+
+    // Reload bills and keep an open details view in step with the latest payments
+    const refreshAfterPayment = async () => {
+        await fetchBills();
+        if (viewingBill) {
+            const res = await fetchWithAuth(`/api/utilities/bills/${viewingBill.id}`);
+            if (res.ok) setViewingBill((await readJson(res)).data);
+        }
     };
 
     const handleRevertToPending = async (billId) => {
-        if (!window.confirm("Revert this bill back to Pending? This will also remove the corresponding expense record from Financials.")) return;
+        if (!window.confirm("Remove all payments for this bill and set it back to Pending? Their expense records will also be removed from Financials.")) return;
         try {
             const res = await fetchWithAuth(`/api/utilities/bills/${billId}/unpay`, { method: 'POST' });
             if (!res.ok) throw new Error('Failed to revert bill');
@@ -332,7 +300,7 @@ function UtilityBillsPage({ utilityType }) {
             acc.billCount++;
             if (b.status !== 'Paid') {
                 acc.pendingCount++;
-                acc.pendingAmount += Number(b.totalAmount || 0);
+                acc.pendingAmount += Number(b.balance ?? b.totalAmount ?? 0);
             }
             if ((b.periodTo || b.date) > (acc.latest.periodTo || acc.latest.date)) acc.latest = b;
         });
@@ -353,12 +321,14 @@ function UtilityBillsPage({ utilityType }) {
 
         scopedBills.forEach(bill => {
             const amt = Number(bill.totalAmount || 0);
+            const paid = Number(bill.paidAmount || 0);
+            const due = Number(bill.balance ?? Math.max(0, amt - paid));
             totalSpend += amt;
+            paidAmount += paid;
+            pendingAmount += due;
             if (bill.status === 'Paid') {
-                paidAmount += amt;
                 paidCount++;
             } else {
-                pendingAmount += amt;
                 pendingCount++;
                 if (isOverdue(bill)) overdueCount++;
             }
@@ -371,8 +341,8 @@ function UtilityBillsPage({ utilityType }) {
             if (!monthlyStats[m]) monthlyStats[m] = { month: m, amount: 0, units: 0, paid: 0, pending: 0 };
             monthlyStats[m].amount += amt;
             monthlyStats[m].units += Number(bill.unitsUsed || 0);
-            if (bill.status === 'Paid') monthlyStats[m].paid += amt;
-            else monthlyStats[m].pending += amt;
+            monthlyStats[m].paid += paid;
+            monthlyStats[m].pending += due;
         });
 
         const monthCount = Object.keys(monthlyStats).length;
@@ -413,10 +383,9 @@ function UtilityBillsPage({ utilityType }) {
     return (
         <div className="animate-slide-up" style={{ paddingBottom: '3rem' }}>
             <ProcessingOverlay
-                show={isUploading || isSaving || isPaying}
+                show={isUploading || isSaving}
                 message={
                     isUploading ? `Reading ${config.label.toLowerCase()} bill...`
-                        : isPaying ? 'Recording payment...'
                         : savingAs === 'edit' ? 'Saving changes...'
                         : savingAs === 'paid' ? 'Saving bill & posting expense...'
                         : 'Saving bill...'
@@ -516,7 +485,7 @@ function UtilityBillsPage({ utilityType }) {
                             {accounts.filter(acc => accountFilter === 'ALL' || acc.accountNo === accountFilter).map(acc => {
                                 const b = acc.latest;
                                 // Outstanding = every bill on this account still Pending in the app
-                                const arrears = acc.pendingAmount - (b.status !== 'Paid' ? Number(b.totalAmount || 0) : 0);
+                                const arrears = acc.pendingAmount - (b.status !== 'Paid' ? Number(b.balance ?? b.totalAmount ?? 0) : 0);
                                 return (
                                     <div key={acc.accountNo} className="card" style={{ padding: '1.25rem', borderTop: `4px solid ${config.color}` }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
@@ -772,6 +741,7 @@ function UtilityBillsPage({ utilityType }) {
                                                     </td>
                                                     <td data-label="Amount" style={{ padding: '1rem', fontWeight: 700, color: 'var(--text)' }}>
                                                         {(bill.totalAmount || 0).toLocaleString()}
+                                                        <PaidDueLine bill={bill} />
                                                         {!isPaid && Number(bill.previousDue) > 0 && (
                                                             <div style={{ fontSize: '0.75rem', fontWeight: 500, color: '#b91c1c', marginTop: '0.15rem' }} title={`Previous due ${lkr(bill.previousDue)}`}>
                                                                 Total due {Number(bill.totalDue).toLocaleString()}
@@ -804,21 +774,22 @@ function UtilityBillsPage({ utilityType }) {
                                                             >
                                                                 <Pencil size={16} />
                                                             </button>
-                                                            {!isPaid ? (
+                                                            {!isPaid && (
                                                                 <button
                                                                     className="btn"
                                                                     onClick={() => openPayModal(bill)}
                                                                     style={{ padding: '0.4rem 0.75rem', backgroundColor: '#10b981', color: 'white', fontSize: '0.85rem' }}
-                                                                    title="Mark as Paid"
+                                                                    title="Record a full or part payment"
                                                                 >
-                                                                    <CheckCircle2 size={15} /> Pay
+                                                                    <CheckCircle2 size={15} /> {Number(bill.paidAmount) > 0 ? 'Pay rest' : 'Pay'}
                                                                 </button>
-                                                            ) : (
+                                                            )}
+                                                            {Number(bill.paidAmount) > 0 && (
                                                                 <button
                                                                     className="btn"
                                                                     onClick={() => handleRevertToPending(bill.id)}
                                                                     style={{ padding: '0.4rem 0.6rem', border: '1px solid var(--border)', backgroundColor: '#f1f5f9', color: 'var(--text-light)', fontSize: '0.8rem' }}
-                                                                    title="Revert to Pending"
+                                                                    title="Remove all payments (back to Pending)"
                                                                 >
                                                                     <RotateCcw size={14} />
                                                                 </button>
@@ -1191,12 +1162,17 @@ function UtilityBillsPage({ utilityType }) {
                                 )}
                             </div>
 
-                            {viewingBill.paidDate && (
-                                <div style={{ padding: '0.75rem', backgroundColor: '#f0fdf4', borderRadius: '0.5rem', border: '1px solid #bbf7d0', marginBottom: '1.25rem', fontSize: '0.85rem', color: '#166534' }}>
-                                    Settled on: <b>{viewingBill.paidDate}</b>
-                                    {viewingBill.paymentNotes && <span> • Notes: {viewingBill.paymentNotes}</span>}
+                            {Number(viewingBill.paidAmount) > 0 && viewingBill.status !== 'Paid' && (
+                                <div style={{ padding: '0.75rem', backgroundColor: '#e0f2fe', borderRadius: '0.5rem', border: '1px solid #bae6fd', marginBottom: '1rem', fontSize: '0.85rem', color: '#0369a1' }}>
+                                    Paid so far <b>{lkr(viewingBill.paidAmount)}</b> · still due <b>{lkr(viewingBill.balance)}</b>
                                 </div>
                             )}
+
+                            <PaymentsList
+                                payments={viewingBill.payments}
+                                paymentsUrl={`/api/utilities/bills/${viewingBill.id}/payments`}
+                                onChanged={refreshAfterPayment}
+                            />
 
                             {(viewingBill.charges || []).length > 0 && (
                                 <>
@@ -1228,17 +1204,18 @@ function UtilityBillsPage({ utilityType }) {
                             <button className="btn" onClick={() => startEdit(viewingBill)} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
                                 <Pencil size={15} /> Edit
                             </button>
-                            {viewingBill.status !== 'Paid' ? (
+                            {viewingBill.status !== 'Paid' && (
                                 <button className="btn" onClick={() => openPayModal(viewingBill)} style={{ backgroundColor: '#10b981', color: 'white' }}>
-                                    <CheckCircle2 size={16} /> Mark as Paid
+                                    <CheckCircle2 size={16} /> Record Payment
                                 </button>
-                            ) : (
+                            )}
+                            {Number(viewingBill.paidAmount) > 0 && (
                                 <button
                                     className="btn"
                                     onClick={() => { handleRevertToPending(viewingBill.id); setViewingBill(null); }}
                                     style={{ border: '1px solid var(--border)', backgroundColor: '#f1f5f9' }}
                                 >
-                                    <RotateCcw size={15} /> Revert to Pending
+                                    <RotateCcw size={15} /> Remove All Payments
                                 </button>
                             )}
                         </div>
@@ -1246,73 +1223,18 @@ function UtilityBillsPage({ utilityType }) {
                 </div>
             )}
 
-            {/* MODAL 2: CONFIRM PAYMENT */}
+            {/* MODAL 2: RECORD A FULL OR PART PAYMENT */}
             {payingBill && (
-                <div className="modal-backdrop" style={modalBackdrop}>
-                    <div className="card animate-slide-up" style={{ width: '100%', maxWidth: '480px', padding: 0, overflow: 'hidden' }}>
-                        <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <h3 style={{ margin: 0, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <CheckCircle2 className="text-success" size={20} />
-                                Settle {UTILITY_TYPES[payingBill.type]?.label || 'Utility'} Bill
-                            </h3>
-                            <button onClick={() => setPayingBill(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-light)' }}>
-                                <X size={20} />
-                            </button>
-                        </div>
-
-                        <div style={{ padding: '1.5rem' }}>
-                            <div style={{ padding: '1rem', backgroundColor: '#f0fdf4', borderRadius: '0.5rem', border: '1px solid #bbf7d0', marginBottom: '1.25rem' }}>
-                                <div style={{ fontSize: '0.85rem', color: '#166534' }}>Settling Bill</div>
-                                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#14532d', margin: '0.2rem 0' }}>
-                                    {payingBill.billNo} — LKR {Number(payingBill.totalAmount).toLocaleString()}
-                                </div>
-                                <div style={{ fontSize: '0.8rem', color: '#166534' }}>
-                                    {[payingBill.provider, payingBill.month].filter(Boolean).join(' • ')}
-                                </div>
-                            </div>
-
-                            <p style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginBottom: '1.25rem' }}>
-                                Marking this bill as paid will automatically record an expense of <b>LKR {Number(payingBill.totalAmount).toLocaleString()}</b> under category <b>"{UTILITY_TYPES[payingBill.type]?.expenseCategory || 'Utilities'}"</b> in your financial accounts.
-                            </p>
-
-                            <div className="form-group">
-                                <label className="form-label">Payment Date</label>
-                                <input
-                                    type="date"
-                                    className="form-control"
-                                    value={paymentData.paidDate}
-                                    onChange={e => setPaymentData({ ...paymentData, paidDate: e.target.value })}
-                                    required
-                                />
-                            </div>
-
-                            <div className="form-group">
-                                <label className="form-label">Payment Notes / Reference (Optional)</label>
-                                <input
-                                    type="text"
-                                    className="form-control"
-                                    placeholder="e.g. Online banking, Cash at counter..."
-                                    value={paymentData.paymentNotes}
-                                    onChange={e => setPaymentData({ ...paymentData, paymentNotes: e.target.value })}
-                                />
-                            </div>
-                        </div>
-
-                        <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', backgroundColor: '#f8fafc' }}>
-                            <button className="btn" onClick={() => setPayingBill(null)} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}>
-                                Cancel
-                            </button>
-                            <button
-                                className="btn"
-                                onClick={handleConfirmPayment}
-                                disabled={isPaying}
-                                style={{ backgroundColor: '#10b981', color: 'white', fontWeight: 600 }}
-                            >
-                                {isPaying ? <><ButtonSpinner /> Processing...</> : 'Confirm Payment & Post Expense'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <PayBillModal
+                    title={`Pay ${UTILITY_TYPES[payingBill.type]?.label || 'Utility'} Bill`}
+                    reference={payingBill.accountNo ? `A/C ${payingBill.accountNo} · ${payingBill.billNo}` : payingBill.billNo}
+                    subtitle={[payingBill.provider, payingBill.month].filter(Boolean).join(' • ')}
+                    bill={payingBill}
+                    payUrl={`/api/utilities/bills/${payingBill.id}/pay`}
+                    expenseCategory={UTILITY_TYPES[payingBill.type]?.expenseCategory || 'Utilities'}
+                    onClose={() => setPayingBill(null)}
+                    onDone={async () => { setPayingBill(null); await refreshAfterPayment(); }}
+                />
             )}
         </div>
     );
