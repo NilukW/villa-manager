@@ -22,6 +22,17 @@ LAST_DEPLOY="$BACKUP_DIR/last-deploy.env"
 KEEP_BACKUPS=20
 NGINX_SITE="/etc/nginx/sites-available/villamanager"
 
+# Install exactly what package-lock.json says. Unlike `npm install`, `npm ci` never rewrites the
+# lockfile, so the server copy stays clean for the next update. Falls back to `npm install` only
+# if the lockfile is out of sync with package.json.
+npm_install_locked() {
+    if [ -f package-lock.json ]; then
+        npm ci --no-audit --no-fund "$@" || { warn "npm ci failed; falling back to npm install"; npm install --no-audit --no-fund "$@"; }
+    else
+        npm install --no-audit --no-fund "$@"
+    fi
+}
+
 log()  { echo -e "\n\033[1;34m==> $*\033[0m"; }
 warn() { echo -e "\033[1;33m[warn] $*\033[0m"; }
 fail() { echo -e "\033[1;31m[error] $*\033[0m"; exit 1; }
@@ -59,7 +70,7 @@ backup_db() {
 # index.html cached don't get a blank page before they refresh.
 build_frontend() {
     cd "$FRONTEND"
-    npm install --no-audit --no-fund
+    npm_install_locked
     local old_assets=""
     if [ -d dist/assets ]; then
         old_assets="$(mktemp -d)"
@@ -122,7 +133,7 @@ cmd_setup() {
     log "Backend"
     ensure_env
     cd "$BACKEND"
-    npm install --omit=dev --no-audit --no-fund
+    npm_install_locked --omit=dev
     start_or_restart_api
     pm2 startup | tail -n 1 | sudo bash
 
@@ -179,7 +190,13 @@ EOF
 cmd_update() {
     cd "$REPO_DIR"
     command -v sqlite3 > /dev/null || fail "sqlite3 is not installed (sudo apt install -y sqlite3)."
-    [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "The server copy has local code changes. Commit or discard them first (git status)."
+    # Older deploys ran `npm install`, which can rewrite package-lock.json; that is not a real code
+    # change, so put the lockfiles back before checking the copy is clean
+    git checkout -- backend/package-lock.json frontend/package-lock.json 2>/dev/null || true
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        git status --short --untracked-files=no
+        fail "The server copy has local code changes (listed above). Commit or discard them first."
+    fi
 
     local prev_commit
     prev_commit="$(git rev-parse HEAD)"
@@ -202,7 +219,7 @@ cmd_update() {
 
     log "4/6 Backend dependencies"
     cd "$BACKEND"
-    npm install --omit=dev --no-audit --no-fund
+    npm_install_locked --omit=dev
 
     log "5/6 Building frontend"
     build_frontend
@@ -244,7 +261,7 @@ cmd_rollback() {
     log "Restoring code"
     cd "$REPO_DIR"
     git checkout --quiet "$PREV_COMMIT"
-    cd "$BACKEND" && npm install --omit=dev --no-audit --no-fund
+    cd "$BACKEND" && npm_install_locked --omit=dev
     build_frontend
     start_or_restart_api
     health_check
