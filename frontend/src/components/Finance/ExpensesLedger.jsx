@@ -87,6 +87,7 @@ export default function ExpensesLedger({ expenses, onExpenseDeleted }) {
                                     <option value="Cleaning">Cleaning & Housekeeping</option>
                                     <option value="Utilities">Utilities</option>
                                     <option value="Commission">OTA Commission</option>
+                                    <option value="Equipment">Equipment & Appliances</option>
                                     <option value="Salary">Staff Salary</option>
                                     <option value="Supplies">Supplies & Groceries</option>
                                     <option value="Other">Other Category</option>

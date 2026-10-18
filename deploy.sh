@@ -46,6 +46,8 @@ ensure_env() {
     grep -q '^JWT_SECRET=' .env || echo "JWT_SECRET=$(openssl rand -hex 48)" >> .env
     grep -q '^TZ=' .env         || echo "TZ=Asia/Colombo" >> .env
     grep -q '^NODE_ENV=' .env   || echo "NODE_ENV=production" >> .env
+    # Optional: reading grocery bills with Claude. Without a key, bills are still attached but items are typed in.
+    grep -q '^ANTHROPIC_API_KEY=.' .env || warn "ANTHROPIC_API_KEY is not set in $BACKEND/.env - grocery bill reading is off (add the key, then: pm2 restart villamanager-api --update-env)."
 }
 
 # Consistent online copy of the SQLite database (safe while the API is running), verified afterwards.

@@ -19,6 +19,8 @@ import Utilities from './pages/Utilities';
 import StaffManage from './pages/StaffManage';
 import StaffPayments from './pages/StaffPayments';
 import StaffBonus from './pages/StaffBonus';
+import Groceries from './pages/Groceries';
+import Inventory from './pages/Inventory';
 
 const ProtectedRoute = ({ children }) => {
   const { isAuthenticated } = useContext(AuthContext);
@@ -66,6 +68,9 @@ function AppRoutes() {
       <Route path="/staff/payments" element={<ProtectedRoute><StaffPayments /></ProtectedRoute>} />
       <Route path="/staff/bonus" element={<ProtectedRoute><StaffBonus /></ProtectedRoute>} />
       <Route path="/staff" element={<Navigate to="/staff/manage" replace />} />
+      <Route path="/supplies/groceries" element={<ProtectedRoute><Groceries /></ProtectedRoute>} />
+      <Route path="/supplies/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
+      <Route path="/supplies" element={<Navigate to="/supplies/groceries" replace />} />
       <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
       <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />

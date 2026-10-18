@@ -84,11 +84,11 @@ export default function Analytics() {
         
         // Structure: monthlyCategoryTotals[monthIndex] = { CategoryName: TotalLkr }
         const monthlyCategoryTotals = Array(12).fill(null).map(() => ({
-            Maintenance: 0, Cleaning: 0, Laundry: 0, Utilities: 0, Commission: 0, Salary: 0, Supplies: 0, Other: 0
+            Maintenance: 0, Cleaning: 0, Laundry: 0, Utilities: 0, Commission: 0, Salary: 0, Supplies: 0, Equipment: 0, Other: 0
         }));
 
         const yearlyCategoryTotals = {
-            Maintenance: 0, Cleaning: 0, Laundry: 0, Utilities: 0, Commission: 0, Salary: 0, Supplies: 0, Other: 0
+            Maintenance: 0, Cleaning: 0, Laundry: 0, Utilities: 0, Commission: 0, Salary: 0, Supplies: 0, Equipment: 0, Other: 0
         };
 
         // 1. Calculate Booking Revenues

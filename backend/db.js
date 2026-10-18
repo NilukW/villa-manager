@@ -203,6 +203,116 @@ const db = new sqlite3.Database(dbPath, (err) => {
         )`);
         db.run("CREATE INDEX IF NOT EXISTS idx_bill_payments_bill ON bill_payments (billKind, billId)", () => {});
 
+        // Groceries & supplies: a catalogue of things bought regularly, and purchases (itemised, or
+        // just a total for small no-bill buys). Each purchase posts one 'Supplies' expense.
+        // groupKey: kitchen | cleaning | amenities | gas | other
+        db.run(`CREATE TABLE IF NOT EXISTS grocery_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            groupKey TEXT NOT NULL DEFAULT 'other',
+            unit TEXT DEFAULT 'pcs',
+            active INTEGER NOT NULL DEFAULT 1,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // Starter catalogue, added only while the catalogue is empty (never re-added after edits)
+        db.run(`INSERT INTO grocery_items (name, groupKey, unit)
+            SELECT column1, column2, column3 FROM (VALUES
+                ('Eggs', 'kitchen', 'pcs'), ('Bread', 'kitchen', 'loaf'), ('Coffee', 'kitchen', 'pack'),
+                ('Milk powder', 'kitchen', 'pack'), ('Tea powder', 'kitchen', 'pack'), ('Spices', 'kitchen', 'pack'),
+                ('Coconut', 'kitchen', 'pcs'), ('Vegetables', 'kitchen', 'kg'), ('Rice', 'kitchen', 'kg'),
+                ('Sausages', 'kitchen', 'pack'), ('Bananas', 'kitchen', 'bunch'),
+                ('Soap', 'cleaning', 'pcs'), ('Dishwash liquid', 'cleaning', 'bottle'), ('Laundry liquid', 'cleaning', 'bottle'),
+                ('Toilet cleaner', 'cleaning', 'bottle'), ('Mop cleaner', 'cleaning', 'bottle'),
+                ('Water bottles', 'amenities', 'bottle'), ('Air freshener', 'amenities', 'bottle'), ('Mosquito repellent', 'amenities', 'pcs'),
+                ('Gas refill', 'gas', 'cylinder')
+            ) WHERE NOT EXISTS (SELECT 1 FROM grocery_items)`, () => {});
+
+        db.run(`CREATE TABLE IF NOT EXISTS grocery_purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            shop TEXT,
+            billNo TEXT,
+            groupKey TEXT,
+            notes TEXT,
+            totalAmount REAL NOT NULL,
+            expenseId INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // Item lines of an itemised purchase; name/group/unit are copied so history survives catalogue edits
+        db.run(`CREATE TABLE IF NOT EXISTS grocery_purchase_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            purchaseId INTEGER NOT NULL,
+            itemId INTEGER,
+            itemName TEXT NOT NULL,
+            groupKey TEXT,
+            unit TEXT,
+            quantity REAL NOT NULL DEFAULT 1,
+            unitPrice REAL NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0
+        )`);
+
+        // Photos/PDFs of grocery bills, kept in the database so backups include them.
+        // purchaseId stays NULL between "read the bill" and "save the purchase"; unlinked files are cleaned up later.
+        db.run(`CREATE TABLE IF NOT EXISTS grocery_bill_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            purchaseId INTEGER,
+            fileHash TEXT NOT NULL,
+            fileName TEXT,
+            mimeType TEXT NOT NULL,
+            data BLOB NOT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // Inventory (things the villa owns) and their service/repair history.
+        // category: appliance | kitchenware | gas | furniture | linen | other
+        // condition: working | needs_repair | broken | disposed
+        db.run(`CREATE TABLE IF NOT EXISTS inventory_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            quantity INTEGER NOT NULL DEFAULT 1,
+            location TEXT,
+            purchaseDate TEXT,
+            purchaseCost REAL,
+            supplier TEXT,
+            billNo TEXT,
+            warrantyUntil TEXT,
+            condition TEXT NOT NULL DEFAULT 'working',
+            serviceIntervalMonths INTEGER,
+            notes TEXT,
+            expenseId INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS inventory_services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            itemId INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'service',
+            description TEXT,
+            vendor TEXT,
+            cost REAL,
+            expenseId INTEGER,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // unitId: which unit was worked on (NULL = the item / all its units); part: e.g. 'Condenser' for type 'part'
+        db.run("ALTER TABLE inventory_services ADD COLUMN unitId INTEGER", () => {});
+        db.run("ALTER TABLE inventory_services ADD COLUMN part TEXT", () => {});
+
+        // Individual units of an item tracked one by one (e.g. each A/C by room), so repairs and
+        // replaced parts can be followed per unit. When an item has units, its quantity follows them.
+        db.run(`CREATE TABLE IF NOT EXISTS inventory_units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            itemId INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            location TEXT,
+            serialNo TEXT,
+            condition TEXT NOT NULL DEFAULT 'working',
+            notes TEXT,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
         // Staff & salary payments
         db.run(`CREATE TABLE IF NOT EXISTS staff (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

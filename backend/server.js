@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { parseLaundryPdf } = require('./laundryParser');
 const { parseUtilityPdf, UTILITY_TYPES } = require('./utilityParser');
 const billPayments = require('./billPayments');
+const billReader = require('./billReader');
 
 // Promise wrappers for the sqlite3 callback API
 const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows)));
@@ -31,6 +32,12 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
 const uploadPdf = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+// Grocery bill photos/PDFs are kept (in the database) with their purchase
+const uploadBill = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 15 * 1024 * 1024 }
 });
 
 // --- Auth Routes ---
@@ -73,6 +80,8 @@ app.use('/api/staff', authenticateToken);
 app.use('/api/staff-payments', authenticateToken);
 app.use('/api/staff-bonus', authenticateToken);
 app.use('/api/notifications', authenticateToken);
+app.use('/api/groceries', authenticateToken);
+app.use('/api/inventory', authenticateToken);
 
 // --- Rooms ---
 app.get('/api/rooms', (req, res) => {
@@ -988,6 +997,768 @@ app.delete('/api/utilities/bills/:id', async (req, res) => {
     }
 });
 
+// --- Groceries & Supplies ---
+
+const GROCERY_GROUPS = { kitchen: 'Breakfast & Kitchen', cleaning: 'Cleaning & Laundry', amenities: 'Guest Amenities', gas: 'Gas', other: 'Other' };
+const groceryGroup = (g) => (GROCERY_GROUPS[g] ? g : 'other');
+
+const groceryExpenseDesc = (purchase, groups) => {
+    const labels = [...new Set(groups.map(g => GROCERY_GROUPS[groceryGroup(g)]))];
+    return `Groceries & Supplies${purchase.shop ? ` - ${purchase.shop}` : ''}${labels.length ? ` (${labels.join(', ')})` : ''}${purchase.billNo ? ` - Bill ${purchase.billNo}` : ''}`;
+};
+
+// Catalogue of items bought regularly
+app.get('/api/groceries/items', async (req, res) => {
+    try {
+        res.json({ data: await dbAll("SELECT * FROM grocery_items ORDER BY active DESC, groupKey, name COLLATE NOCASE") });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/groceries/items', async (req, res) => {
+    const name = (req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: "Item name is required" });
+    try {
+        const dup = await dbGet("SELECT id FROM grocery_items WHERE LOWER(name) = LOWER(?)", [name]);
+        if (dup) return res.status(409).json({ error: `"${name}" is already in the item list.` });
+        const r = await dbRun("INSERT INTO grocery_items (name, groupKey, unit) VALUES (?, ?, ?)",
+            [name, groceryGroup(req.body.groupKey), (req.body.unit || 'pcs').trim()]);
+        res.json({ message: "Item added", data: { id: r.lastID } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/groceries/items/:id', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM grocery_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        const name = req.body.name !== undefined ? String(req.body.name).trim() : item.name;
+        if (!name) return res.status(400).json({ error: "Item name is required" });
+        const dup = await dbGet("SELECT id FROM grocery_items WHERE LOWER(name) = LOWER(?) AND id != ?", [name, item.id]);
+        if (dup) return res.status(409).json({ error: `"${name}" is already in the item list.` });
+        await dbRun("UPDATE grocery_items SET name = ?, groupKey = ?, unit = ?, active = ? WHERE id = ?", [
+            name,
+            req.body.groupKey !== undefined ? groceryGroup(req.body.groupKey) : item.groupKey,
+            req.body.unit !== undefined ? String(req.body.unit).trim() || 'pcs' : item.unit,
+            req.body.active !== undefined ? (req.body.active ? 1 : 0) : item.active,
+            item.id
+        ]);
+        res.json({ message: "Item updated" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Items that appear on past purchases are hidden instead of deleted, so history keeps its names
+app.delete('/api/groceries/items/:id', async (req, res) => {
+    try {
+        const used = await dbGet("SELECT COUNT(*) AS n FROM grocery_purchase_items WHERE itemId = ?", [req.params.id]);
+        if (used.n > 0) {
+            await dbRun("UPDATE grocery_items SET active = 0 WHERE id = ?", [req.params.id]);
+            return res.json({ message: "Item is used on past purchases, so it was hidden instead of deleted", data: { hidden: true } });
+        }
+        await dbRun("DELETE FROM grocery_items WHERE id = ?", [req.params.id]);
+        res.json({ message: "Item deleted" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Validate and normalise a purchase body. Itemised when lines are given; otherwise a single total
+// for one group (small purchases without a bill).
+const normalisePurchase = async (body) => {
+    const date = body.date;
+    if (!date) throw Object.assign(new Error("Purchase date is required"), { status: 400 });
+    const lines = Array.isArray(body.items) ? body.items.filter(l => l && (l.itemId || (l.itemName || '').trim())) : [];
+
+    if (lines.length > 0) {
+        const catalogue = await dbAll("SELECT * FROM grocery_items");
+        const byId = Object.fromEntries(catalogue.map(i => [i.id, i]));
+        const items = lines.map(l => {
+            const cat = l.itemId ? byId[Number(l.itemId)] : null;
+            const quantity = Number(l.quantity || 0);
+            const unitPrice = Number(l.unitPrice || 0);
+            const amount = l.amount !== undefined && l.amount !== '' ? Number(l.amount) : round2(quantity * unitPrice);
+            if (!(amount > 0)) throw Object.assign(new Error(`Enter a price for ${cat ? cat.name : l.itemName}`), { status: 400 });
+            return {
+                itemId: cat ? cat.id : null,
+                itemName: cat ? cat.name : String(l.itemName).trim(),
+                groupKey: cat ? cat.groupKey : groceryGroup(l.groupKey),
+                unit: cat ? cat.unit : (String(l.unit || '').trim() || 'pcs'),
+                quantity: quantity || 1,
+                unitPrice: unitPrice || round2(amount / (quantity || 1)),
+                amount: round2(amount),
+                addToCatalogue: !cat && !!l.addToCatalogue
+            };
+        });
+        const groups = [...new Set(items.map(i => i.groupKey))];
+        return {
+            date, shop: (body.shop || '').trim(), billNo: (body.billNo || '').trim(), notes: (body.notes || '').trim(),
+            groupKey: groups.length === 1 ? groups[0] : 'mixed',
+            totalAmount: round2(items.reduce((s, i) => s + i.amount, 0)),
+            items, groups
+        };
+    }
+
+    const totalAmount = round2(Number(body.totalAmount || 0));
+    if (!(totalAmount > 0)) throw Object.assign(new Error("Enter the items bought, or the total amount"), { status: 400 });
+    const groupKey = groceryGroup(body.groupKey);
+    return {
+        date, shop: (body.shop || '').trim(), billNo: (body.billNo || '').trim(), notes: (body.notes || '').trim(),
+        groupKey, totalAmount, items: [], groups: [groupKey]
+    };
+};
+
+// New items typed into a purchase (or read from a bill) join the catalogue, so they can be picked next
+// time. An existing item with the same name is reused (and shown again if it was hidden).
+const addNewItemsToCatalogue = async (items) => {
+    for (const i of items) {
+        if (i.itemId || !i.addToCatalogue) continue;
+        const existing = await dbGet("SELECT * FROM grocery_items WHERE LOWER(name) = LOWER(?)", [i.itemName]);
+        if (existing) {
+            if (!existing.active) await dbRun("UPDATE grocery_items SET active = 1 WHERE id = ?", [existing.id]);
+            Object.assign(i, { itemId: existing.id, itemName: existing.name, groupKey: existing.groupKey, unit: existing.unit });
+        } else {
+            const r = await dbRun("INSERT INTO grocery_items (name, groupKey, unit) VALUES (?, ?, ?)", [i.itemName, i.groupKey, i.unit]);
+            i.itemId = r.lastID;
+        }
+    }
+};
+
+// Attach an uploaded bill file to a purchase (replacing any earlier one), or remove it
+const linkBillFile = async (purchaseId, body) => {
+    const fileId = body.billFileId ? Number(body.billFileId) : null;
+    if (fileId) {
+        const file = await dbGet("SELECT id, purchaseId FROM grocery_bill_files WHERE id = ?", [fileId]);
+        if (!file) throw Object.assign(new Error("The uploaded bill has expired. Please upload it again."), { status: 400 });
+        if (file.purchaseId && file.purchaseId !== purchaseId) throw Object.assign(new Error("That bill belongs to another purchase."), { status: 409 });
+        await dbRun("DELETE FROM grocery_bill_files WHERE purchaseId = ? AND id != ?", [purchaseId, fileId]);
+        await dbRun("UPDATE grocery_bill_files SET purchaseId = ? WHERE id = ?", [purchaseId, fileId]);
+    } else if (body.removeBill) {
+        await dbRun("DELETE FROM grocery_bill_files WHERE purchaseId = ?", [purchaseId]);
+    }
+};
+
+const insertPurchaseItems = async (purchaseId, items) => {
+    await addNewItemsToCatalogue(items);
+    for (const i of items) {
+        await dbRun(`INSERT INTO grocery_purchase_items (purchaseId, itemId, itemName, groupKey, unit, quantity, unitPrice, amount)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [purchaseId, i.itemId, i.itemName, i.groupKey, i.unit, i.quantity, i.unitPrice, i.amount]);
+    }
+};
+
+// Purchases in a month (YYYY-MM), newest first, with their item lines
+app.get('/api/groceries/purchases', async (req, res) => {
+    const { month } = req.query;
+    if (!isMonthKey(month)) return res.status(400).json({ error: "month must be in YYYY-MM format" });
+    try {
+        const purchases = await dbAll(`SELECT p.*, (SELECT f.id FROM grocery_bill_files f WHERE f.purchaseId = p.id LIMIT 1) AS billFileId
+                                       FROM grocery_purchases p WHERE substr(p.date, 1, 7) = ? ORDER BY p.date DESC, p.id DESC`, [month]);
+        const ids = purchases.map(p => p.id);
+        const lines = ids.length
+            ? await dbAll(`SELECT * FROM grocery_purchase_items WHERE purchaseId IN (${ids.map(() => '?').join(',')}) ORDER BY id`, ids)
+            : [];
+        const byPurchase = {};
+        lines.forEach(l => { (byPurchase[l.purchaseId] = byPurchase[l.purchaseId] || []).push(l); });
+        res.json({ data: purchases.map(p => ({ ...p, items: byPurchase[p.id] || [] })) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/groceries/purchases', async (req, res) => {
+    try {
+        const p = await normalisePurchase(req.body);
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            const expense = await dbRun("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Supplies', ?, ?)",
+                [p.date, p.totalAmount, groceryExpenseDesc(p, p.groups)]);
+            const r = await dbRun(`INSERT INTO grocery_purchases (date, shop, billNo, groupKey, notes, totalAmount, expenseId)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)`, [p.date, p.shop, p.billNo, p.groupKey, p.notes, p.totalAmount, expense.lastID]);
+            await insertPurchaseItems(r.lastID, p.items);
+            await linkBillFile(r.lastID, req.body);
+            await dbRun('COMMIT');
+            res.json({ message: `Purchase of LKR ${p.totalAmount.toLocaleString()} recorded and added to expenses`, data: { id: r.lastID } });
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+app.put('/api/groceries/purchases/:id', async (req, res) => {
+    try {
+        const existing = await dbGet("SELECT * FROM grocery_purchases WHERE id = ?", [req.params.id]);
+        if (!existing) return res.status(404).json({ error: "Purchase not found" });
+        const p = await normalisePurchase(req.body);
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            await dbRun(`UPDATE grocery_purchases SET date = ?, shop = ?, billNo = ?, groupKey = ?, notes = ?, totalAmount = ? WHERE id = ?`,
+                [p.date, p.shop, p.billNo, p.groupKey, p.notes, p.totalAmount, existing.id]);
+            await dbRun("DELETE FROM grocery_purchase_items WHERE purchaseId = ?", [existing.id]);
+            await insertPurchaseItems(existing.id, p.items);
+            await linkBillFile(existing.id, req.body);
+            if (existing.expenseId) {
+                await dbRun("UPDATE expenses SET date = ?, amount = ?, description = ? WHERE id = ?",
+                    [p.date, p.totalAmount, groceryExpenseDesc(p, p.groups), existing.expenseId]);
+            }
+            await dbRun('COMMIT');
+            res.json({ message: "Purchase updated" });
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/groceries/purchases/:id', async (req, res) => {
+    try {
+        const p = await dbGet("SELECT * FROM grocery_purchases WHERE id = ?", [req.params.id]);
+        if (!p) return res.status(404).json({ error: "Purchase not found" });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            if (p.expenseId) await dbRun("DELETE FROM expenses WHERE id = ?", [p.expenseId]);
+            await dbRun("DELETE FROM grocery_purchase_items WHERE purchaseId = ?", [p.id]);
+            await dbRun("DELETE FROM grocery_bill_files WHERE purchaseId = ?", [p.id]);
+            await dbRun("DELETE FROM grocery_purchases WHERE id = ?", [p.id]);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: "Purchase deleted and removed from expenses" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Upload a bill photo/PDF for a purchase. The file is stored (unlinked until the purchase is saved) and,
+// when ANTHROPIC_API_KEY is set, read by Claude to suggest shop, date, bill no. and item lines for review.
+// Optional body field purchaseId: the purchase being edited (so its own bill isn't reported as a duplicate).
+app.post('/api/groceries/parse-bill', uploadBill.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "Choose a photo or PDF of the bill" });
+        const mimeType = req.file.mimetype;
+        if (mimeType !== 'application/pdf' && !billReader.IMAGE_TYPES.includes(mimeType)) {
+            return res.status(400).json({ error: "Upload a photo (JPG, PNG, WEBP) or a PDF of the bill" });
+        }
+        const fileHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+        const editingId = req.body.purchaseId ? Number(req.body.purchaseId) : null;
+
+        const dup = await dbGet(`SELECT p.* FROM grocery_bill_files f JOIN grocery_purchases p ON p.id = f.purchaseId
+                                 WHERE f.fileHash = ? AND (? IS NULL OR p.id != ?)`, [fileHash, editingId, editingId]);
+        if (dup) {
+            return res.status(409).json({ error: `This bill has already been saved: ${dup.date}${dup.shop ? `, ${dup.shop}` : ''}, LKR ${Number(dup.totalAmount).toLocaleString()}. Duplicate bills are not allowed.` });
+        }
+
+        // Bills uploaded but never saved with a purchase are dropped after a day
+        await dbRun("DELETE FROM grocery_bill_files WHERE purchaseId IS NULL AND createdAt < datetime('now', '-1 day')");
+        const pending = await dbGet("SELECT id FROM grocery_bill_files WHERE purchaseId IS NULL AND fileHash = ?", [fileHash]);
+        const billFileId = pending ? pending.id : (await dbRun(
+            "INSERT INTO grocery_bill_files (fileHash, fileName, mimeType, data) VALUES (?, ?, ?, ?)",
+            [fileHash, req.file.originalname || '', mimeType, req.file.buffer]
+        )).lastID;
+
+        if (!billReader.isConfigured()) {
+            return res.json({ data: { billFileId, reading: null, readError: "Bill attached. Automatic reading isn't set up on the server (ANTHROPIC_API_KEY), so please enter the items." } });
+        }
+        try {
+            const catalogue = await dbAll("SELECT id, name, groupKey, unit FROM grocery_items WHERE active = 1 ORDER BY groupKey, name");
+            const reading = await billReader.readBill({ buffer: req.file.buffer, mimeType, catalogue });
+            res.json({ data: { billFileId, reading } });
+        } catch (err) {
+            const friendly = billReader.friendlyError(err);
+            console.error('Bill reading failed:', err.message);
+            res.json({ data: { billFileId, reading: null, readError: `Bill attached, but it couldn't be read: ${friendly.message}` } });
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// The saved bill file of a purchase
+app.get('/api/groceries/purchases/:id/bill', async (req, res) => {
+    try {
+        const file = await dbGet("SELECT * FROM grocery_bill_files WHERE purchaseId = ?", [req.params.id]);
+        if (!file) return res.status(404).json({ error: "No bill saved for this purchase" });
+        res.set('Content-Type', file.mimeType);
+        res.set('Cache-Control', 'private, no-store');
+        res.send(file.data);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Month summary: spend per group, and per item with quantity, average price and last month's average
+app.get('/api/groceries/summary', async (req, res) => {
+    const { month } = req.query;
+    if (!isMonthKey(month)) return res.status(400).json({ error: "month must be in YYYY-MM format" });
+    try {
+        const prevMonth = shiftMonthKey(month, -1);
+        // Itemised lines carry their own group; total-only purchases count under the purchase's group
+        const byGroup = await dbAll(`
+            SELECT groupKey, SUM(amount) AS total FROM (
+                SELECT l.groupKey, l.amount FROM grocery_purchase_items l JOIN grocery_purchases p ON p.id = l.purchaseId WHERE substr(p.date, 1, 7) = ?
+                UNION ALL
+                SELECT p.groupKey, p.totalAmount FROM grocery_purchases p WHERE substr(p.date, 1, 7) = ?
+                    AND NOT EXISTS (SELECT 1 FROM grocery_purchase_items l WHERE l.purchaseId = p.id)
+            ) GROUP BY groupKey`, [month, month]);
+        const itemStats = (m) => dbAll(`
+            SELECT COALESCE(l.itemId, -1) AS itemId, l.itemName, l.groupKey, l.unit,
+                   SUM(l.quantity) AS quantity, SUM(l.amount) AS total, COUNT(*) AS purchases
+            FROM grocery_purchase_items l JOIN grocery_purchases p ON p.id = l.purchaseId
+            WHERE substr(p.date, 1, 7) = ? GROUP BY COALESCE(l.itemId, l.itemName) ORDER BY total DESC`, [m]);
+        const [current, previous] = await Promise.all([itemStats(month), itemStats(prevMonth)]);
+        const prevByKey = Object.fromEntries(previous.map(i => [i.itemId > 0 ? `id:${i.itemId}` : `name:${i.itemName}`, i]));
+        const items = current.map(i => {
+            const prev = prevByKey[i.itemId > 0 ? `id:${i.itemId}` : `name:${i.itemName}`];
+            return {
+                ...i,
+                total: round2(i.total),
+                avgPrice: i.quantity > 0 ? round2(i.total / i.quantity) : null,
+                prevAvgPrice: prev && prev.quantity > 0 ? round2(prev.total / prev.quantity) : null
+            };
+        });
+        const prevTotal = await dbGet("SELECT COALESCE(SUM(totalAmount), 0) AS total FROM grocery_purchases WHERE substr(date, 1, 7) = ?", [prevMonth]);
+        res.json({
+            data: {
+                month,
+                total: round2(byGroup.reduce((s, g) => s + g.total, 0)),
+                prevTotal: round2(prevTotal.total),
+                groups: Object.keys(GROCERY_GROUPS).map(k => ({ groupKey: k, label: GROCERY_GROUPS[k], total: round2((byGroup.find(g => g.groupKey === k) || {}).total || 0) })),
+                items
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- Inventory (assets) & service log ---
+
+const INVENTORY_CATEGORIES = ['appliance', 'kitchenware', 'gas', 'furniture', 'linen', 'other'];
+const INVENTORY_CONDITIONS = ['working', 'needs_repair', 'broken', 'disposed'];
+
+// Add months to a YYYY-MM-DD date, clamping to the end of shorter months
+const addMonthsIso = (iso, months) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    const target = new Date(Date.UTC(y, m - 1 + months, 1));
+    const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+    return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
+};
+
+// Next service = last service (or purchase date) + interval; null when no interval or no start date
+const nextServiceDue = (item, lastServiceDate) => {
+    if (!item.serviceIntervalMonths || item.condition === 'disposed') return null;
+    const from = lastServiceDate || item.purchaseDate;
+    return from ? addMonthsIso(from, Number(item.serviceIntervalMonths)) : null;
+};
+
+// Items with their service stats. For items tracked unit by unit, each working unit has its own next
+// service (its last service, or the last one logged for all units); the item shows the earliest.
+const loadInventory = async () => {
+    const items = await dbAll("SELECT * FROM inventory_items ORDER BY CASE condition WHEN 'disposed' THEN 1 ELSE 0 END, category, name COLLATE NOCASE");
+    const stats = await dbAll(`SELECT itemId, COUNT(*) AS serviceCount, COALESCE(SUM(cost), 0) AS serviceCost,
+                                      MAX(CASE WHEN type = 'service' THEN date END) AS lastServiceDate, MAX(date) AS lastActivity
+                               FROM inventory_services GROUP BY itemId`);
+    const byItem = Object.fromEntries(stats.map(s => [s.itemId, s]));
+    const units = await dbAll("SELECT * FROM inventory_units ORDER BY id");
+    const unitServices = await dbAll(`SELECT itemId, unitId, MAX(date) AS lastServiceDate FROM inventory_services
+                                      WHERE type = 'service' GROUP BY itemId, unitId`);
+    const lastFor = (itemId, unitId) => (unitServices.find(s => s.itemId === itemId && s.unitId === unitId) || {}).lastServiceDate || null;
+
+    return items.map(i => {
+        const s = byItem[i.id] || {};
+        const itemUnits = units.filter(u => u.itemId === i.id);
+        const liveUnits = itemUnits.filter(u => u.condition !== 'disposed');
+        let next = nextServiceDue(i, s.lastServiceDate);
+        let unitsDue = [];
+        if (liveUnits.length > 0) {
+            const allUnitsLast = lastFor(i.id, null);
+            const perUnit = liveUnits.map(u => {
+                const own = lastFor(i.id, u.id);
+                const last = [own, allUnitsLast].filter(Boolean).sort().pop() || null;
+                return { id: u.id, label: u.label, location: u.location, nextServiceDue: nextServiceDue(i, last) };
+            }).filter(u => u.nextServiceDue);
+            next = perUnit.map(u => u.nextServiceDue).sort()[0] || null;
+            unitsDue = perUnit.sort((a, b) => a.nextServiceDue.localeCompare(b.nextServiceDue));
+        }
+        return {
+            ...i,
+            serviceCount: s.serviceCount || 0,
+            serviceCost: round2(s.serviceCost || 0),
+            lastServiceDate: s.lastServiceDate || null,
+            nextServiceDue: next,
+            unitCount: liveUnits.length,
+            unitsNeedingAttention: liveUnits.filter(u => ['needs_repair', 'broken'].includes(u.condition)).length,
+            unitsDue
+        };
+    });
+};
+
+// When an item is tracked unit by unit, its quantity is the number of units still in use
+const syncUnitQuantity = async (itemId) => {
+    const n = await dbGet("SELECT COUNT(*) AS n FROM inventory_units WHERE itemId = ? AND condition != 'disposed'", [itemId]);
+    const any = await dbGet("SELECT COUNT(*) AS n FROM inventory_units WHERE itemId = ?", [itemId]);
+    if (any.n > 0) await dbRun("UPDATE inventory_items SET quantity = ? WHERE id = ?", [n.n, itemId]);
+};
+
+const inventoryExpenseDesc = (item) =>
+    `Equipment - ${item.name}${Number(item.quantity) > 1 ? ` x${item.quantity}` : ''}${item.supplier ? ` (${item.supplier})` : ''}${item.billNo ? ` - Bill ${item.billNo}` : ''}`;
+
+const normaliseInventoryItem = (body, existing = {}) => {
+    const pick = (k) => body[k] !== undefined ? body[k] : existing[k];
+    const name = String(pick('name') || '').trim();
+    if (!name) throw Object.assign(new Error("Item name is required"), { status: 400 });
+    const quantity = parseInt(pick('quantity'), 10);
+    if (!(quantity >= 0)) throw Object.assign(new Error("Quantity must be zero or more"), { status: 400 });
+    const category = INVENTORY_CATEGORIES.includes(pick('category')) ? pick('category') : 'other';
+    const condition = INVENTORY_CONDITIONS.includes(pick('condition')) ? pick('condition') : 'working';
+    const interval = pick('serviceIntervalMonths');
+    const cost = pick('purchaseCost');
+    return {
+        name, category, quantity, condition,
+        location: (pick('location') || '').trim(),
+        purchaseDate: pick('purchaseDate') || null,
+        purchaseCost: cost === '' || cost === null || cost === undefined ? null : round2(Number(cost)),
+        supplier: (pick('supplier') || '').trim(),
+        billNo: (pick('billNo') || '').trim(),
+        warrantyUntil: pick('warrantyUntil') || null,
+        serviceIntervalMonths: interval === '' || interval === null || interval === undefined || Number(interval) <= 0 ? null : parseInt(interval, 10),
+        notes: (pick('notes') || '').trim()
+    };
+};
+
+app.get('/api/inventory', async (req, res) => {
+    try {
+        res.json({ data: await loadInventory() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Add an item. recordExpense posts its purchase cost as an 'Equipment' expense (leave it off for
+// things owned before you started using the app).
+app.post('/api/inventory', async (req, res) => {
+    try {
+        const item = normaliseInventoryItem(req.body);
+        const record = !!req.body.recordExpense && item.purchaseCost > 0;
+        if (record && !item.purchaseDate) return res.status(400).json({ error: "Enter the purchase date to record the cost as an expense" });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            let expenseId = null;
+            if (record) {
+                const e = await dbRun("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Equipment', ?, ?)",
+                    [item.purchaseDate, item.purchaseCost, inventoryExpenseDesc(item)]);
+                expenseId = e.lastID;
+            }
+            const r = await dbRun(`INSERT INTO inventory_items (name, category, quantity, location, purchaseDate, purchaseCost, supplier, billNo,
+                                   warrantyUntil, condition, serviceIntervalMonths, notes, expenseId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+                item.name, item.category, item.quantity, item.location, item.purchaseDate, item.purchaseCost, item.supplier, item.billNo,
+                item.warrantyUntil, item.condition, item.serviceIntervalMonths, item.notes, expenseId
+            ]);
+            await dbRun('COMMIT');
+            res.json({ message: record ? "Item added and its cost recorded as an expense" : "Item added", data: { id: r.lastID } });
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Update an item. Its purchase expense (if any) follows the cost/date/name; recordExpense can add
+// one later, removeExpense drops it.
+app.put('/api/inventory/:id', async (req, res) => {
+    try {
+        const existing = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!existing) return res.status(404).json({ error: "Item not found" });
+        const item = normaliseInventoryItem(req.body, existing);
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            let expenseId = existing.expenseId;
+            if (expenseId && (req.body.removeExpense || !(item.purchaseCost > 0))) {
+                await dbRun("DELETE FROM expenses WHERE id = ?", [expenseId]);
+                expenseId = null;
+            } else if (expenseId) {
+                await dbRun("UPDATE expenses SET date = ?, amount = ?, description = ? WHERE id = ?",
+                    [item.purchaseDate || existing.purchaseDate, item.purchaseCost, inventoryExpenseDesc(item), expenseId]);
+            } else if (req.body.recordExpense && item.purchaseCost > 0) {
+                if (!item.purchaseDate) throw Object.assign(new Error("Enter the purchase date to record the cost as an expense"), { status: 400 });
+                const e = await dbRun("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Equipment', ?, ?)",
+                    [item.purchaseDate, item.purchaseCost, inventoryExpenseDesc(item)]);
+                expenseId = e.lastID;
+            }
+            await dbRun(`UPDATE inventory_items SET name = ?, category = ?, quantity = ?, location = ?, purchaseDate = ?, purchaseCost = ?,
+                         supplier = ?, billNo = ?, warrantyUntil = ?, condition = ?, serviceIntervalMonths = ?, notes = ?, expenseId = ? WHERE id = ?`, [
+                item.name, item.category, item.quantity, item.location, item.purchaseDate, item.purchaseCost, item.supplier, item.billNo,
+                item.warrantyUntil, item.condition, item.serviceIntervalMonths, item.notes, expenseId, existing.id
+            ]);
+            await syncUnitQuantity(existing.id);
+            await dbRun('COMMIT');
+            res.json({ message: "Item updated" });
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Delete an item entered by mistake, with its purchase and service expenses.
+// (For items thrown away or sold, set condition 'disposed' instead to keep the history.)
+app.delete('/api/inventory/:id', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            await dbRun("DELETE FROM expenses WHERE id IN (SELECT expenseId FROM inventory_services WHERE itemId = ? AND expenseId IS NOT NULL)", [item.id]);
+            if (item.expenseId) await dbRun("DELETE FROM expenses WHERE id = ?", [item.expenseId]);
+            await dbRun("DELETE FROM inventory_services WHERE itemId = ?", [item.id]);
+            await dbRun("DELETE FROM inventory_units WHERE itemId = ?", [item.id]);
+            await dbRun("DELETE FROM inventory_items WHERE id = ?", [item.id]);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: "Item deleted" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// One-click starter list of what the villa already owns (no costs, no expenses). Only when empty.
+app.post('/api/inventory/starter', async (req, res) => {
+    try {
+        const count = await dbGet("SELECT COUNT(*) AS n FROM inventory_items");
+        if (count.n > 0) return res.status(409).json({ error: "The inventory already has items; add the rest one by one." });
+        const starter = [
+            ['Fridge', 'appliance', 2, null], ['Air conditioner', 'appliance', 5, 6], ['Hot water machine', 'appliance', 4, 12],
+            ['Solar hot water system', 'appliance', 1, 12], ['Kettle', 'appliance', 2, null], ['Cooker hob', 'appliance', 2, null],
+            ['Mosquito repellent machine', 'appliance', 1, null], ['Iron', 'appliance', 1, null], ['Hair dryer', 'appliance', 1, null],
+            ['Gas cylinder', 'gas', 1, null],
+            ['Plates', 'kitchenware', 1, null], ['Spoons', 'kitchenware', 1, null], ['Forks', 'kitchenware', 1, null],
+            ['Butter knives', 'kitchenware', 1, null], ['Knives', 'kitchenware', 1, null]
+        ];
+        for (const [name, category, quantity, interval] of starter) {
+            await dbRun("INSERT INTO inventory_items (name, category, quantity, condition, serviceIntervalMonths) VALUES (?, ?, ?, 'working', ?)",
+                [name, category, quantity, interval]);
+        }
+        res.json({ message: `Added ${starter.length} items. Update quantities, locations and costs as needed.` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/inventory/:id/services', async (req, res) => {
+    try {
+        res.json({ data: await dbAll(`SELECT s.*, u.label AS unitLabel, u.location AS unitLocation FROM inventory_services s
+                                      LEFT JOIN inventory_units u ON u.id = s.unitId
+                                      WHERE s.itemId = ? ORDER BY s.date DESC, s.id DESC`, [req.params.id]) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Log a service/repair/part replacement, optionally for one unit; any cost is posted as a 'Maintenance' expense
+app.post('/api/inventory/:id/services', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        const { date, description, vendor } = req.body;
+        const type = ['service', 'repair', 'part'].includes(req.body.type) ? req.body.type : 'service';
+        const cost = req.body.cost === '' || req.body.cost === undefined || req.body.cost === null ? 0 : round2(Number(req.body.cost));
+        if (!date) return res.status(400).json({ error: "Date is required" });
+        if (cost < 0 || isNaN(cost)) return res.status(400).json({ error: "Cost must be zero or more" });
+        const part = type === 'part' ? String(req.body.part || '').trim() : '';
+        if (type === 'part' && !part) return res.status(400).json({ error: "Enter which part was replaced" });
+        let unit = null;
+        if (req.body.unitId) {
+            unit = await dbGet("SELECT * FROM inventory_units WHERE id = ? AND itemId = ?", [req.body.unitId, item.id]);
+            if (!unit) return res.status(400).json({ error: "That unit doesn't belong to this item" });
+        }
+        const typeLabel = { service: 'Service', repair: 'Repair', part: 'Part replaced' }[type];
+        const what = [part, description].filter(Boolean).join(' - ');
+
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            let expenseId = null;
+            if (cost > 0) {
+                const e = await dbRun("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Maintenance', ?, ?)",
+                    [date, cost, `${typeLabel} - ${item.name}${unit ? ` [${unit.label}${unit.location ? `, ${unit.location}` : ''}]` : ''}${what ? `: ${what}` : ''}${vendor ? ` (${vendor})` : ''}`]);
+                expenseId = e.lastID;
+            }
+            await dbRun("INSERT INTO inventory_services (itemId, unitId, date, type, part, description, vendor, cost, expenseId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [item.id, unit ? unit.id : null, date, type, part || null, (description || '').trim(), (vendor || '').trim(), cost || null, expenseId]);
+            // A repair brings the unit (or the item) back into use
+            if (type !== 'service' && req.body.markWorking) {
+                if (unit && ['needs_repair', 'broken'].includes(unit.condition)) {
+                    await dbRun("UPDATE inventory_units SET condition = 'working' WHERE id = ?", [unit.id]);
+                } else if (!unit && ['needs_repair', 'broken'].includes(item.condition)) {
+                    await dbRun("UPDATE inventory_items SET condition = 'working' WHERE id = ?", [item.id]);
+                }
+            }
+            await dbRun('COMMIT');
+            res.json({ message: cost > 0 ? `${typeLabel} logged and LKR ${cost.toLocaleString()} added to expenses` : `${typeLabel} logged` });
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/inventory/services/:serviceId', async (req, res) => {
+    try {
+        const s = await dbGet("SELECT * FROM inventory_services WHERE id = ?", [req.params.serviceId]);
+        if (!s) return res.status(404).json({ error: "Service record not found" });
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            if (s.expenseId) await dbRun("DELETE FROM expenses WHERE id = ?", [s.expenseId]);
+            await dbRun("DELETE FROM inventory_services WHERE id = ?", [s.id]);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: "Service record deleted" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- Inventory units (each A/C, fridge... tracked on its own) ---
+
+const normaliseUnit = (body, existing = {}) => {
+    const pick = (k) => body[k] !== undefined ? body[k] : existing[k];
+    const label = String(pick('label') || '').trim();
+    if (!label) throw Object.assign(new Error("Give the unit a name, e.g. \"A/C 1\""), { status: 400 });
+    return {
+        label,
+        location: String(pick('location') || '').trim(),
+        serialNo: String(pick('serialNo') || '').trim(),
+        condition: INVENTORY_CONDITIONS.includes(pick('condition')) ? pick('condition') : 'working',
+        notes: String(pick('notes') || '').trim()
+    };
+};
+
+// Units of an item, each with its last service and the parts replaced on it (latest date and count per part)
+app.get('/api/inventory/:id/units', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        const units = await dbAll("SELECT * FROM inventory_units WHERE itemId = ? ORDER BY CASE condition WHEN 'disposed' THEN 1 ELSE 0 END, id", [item.id]);
+        const services = await dbAll("SELECT * FROM inventory_services WHERE itemId = ? ORDER BY date, id", [item.id]);
+        const partNames = [...new Set(services.filter(s => s.type === 'part' && s.part).map(s => s.part))].sort((a, b) => a.localeCompare(b));
+        const summarise = (unitId) => {
+            const own = services.filter(s => s.unitId === unitId);
+            const parts = {};
+            own.filter(s => s.type === 'part' && s.part).forEach(s => {
+                parts[s.part] = { lastDate: s.date, count: (parts[s.part]?.count || 0) + 1 };
+            });
+            const repairs = own.filter(s => s.type !== 'service');
+            return {
+                lastServiceDate: own.filter(s => s.type === 'service').map(s => s.date).pop() || null,
+                lastRepairDate: repairs.map(s => s.date).pop() || null,
+                repairCount: repairs.length,
+                spent: round2(own.reduce((t, s) => t + Number(s.cost || 0), 0)),
+                parts
+            };
+        };
+        res.json({
+            data: {
+                units: units.map(u => ({ ...u, ...summarise(u.id) })),
+                allUnits: summarise(null), // work logged for the item as a whole
+                partNames
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/inventory/:id/units', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        const u = normaliseUnit(req.body);
+        const r = await dbRun("INSERT INTO inventory_units (itemId, label, location, serialNo, condition, notes) VALUES (?, ?, ?, ?, ?, ?)",
+            [item.id, u.label, u.location, u.serialNo, u.condition, u.notes]);
+        await syncUnitQuantity(item.id);
+        res.json({ message: "Unit added", data: { id: r.lastID } });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Start tracking an item unit by unit: one unit per quantity, e.g. "Air conditioner 1".."Air conditioner 5"
+app.post('/api/inventory/:id/units/split', async (req, res) => {
+    try {
+        const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
+        if (!item) return res.status(404).json({ error: "Item not found" });
+        const existing = await dbGet("SELECT COUNT(*) AS n FROM inventory_units WHERE itemId = ?", [item.id]);
+        if (existing.n > 0) return res.status(409).json({ error: "This item is already tracked unit by unit" });
+        const count = Math.max(1, parseInt(item.quantity, 10) || 1);
+        if (count > 50) return res.status(400).json({ error: "Too many to split; add the units one by one" });
+        const condition = item.condition === 'disposed' ? 'working' : item.condition;
+        await dbRun('BEGIN TRANSACTION');
+        try {
+            for (let n = 1; n <= count; n++) {
+                await dbRun("INSERT INTO inventory_units (itemId, label, location, condition) VALUES (?, ?, ?, ?)",
+                    [item.id, count === 1 ? item.name : `${item.name} ${n}`, count === 1 ? (item.location || '') : '', condition]);
+            }
+            await syncUnitQuantity(item.id);
+            await dbRun('COMMIT');
+        } catch (err) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw err;
+        }
+        res.json({ message: `Created ${count} unit(s). Set the room for each one.` });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+app.put('/api/inventory/units/:unitId', async (req, res) => {
+    try {
+        const existing = await dbGet("SELECT * FROM inventory_units WHERE id = ?", [req.params.unitId]);
+        if (!existing) return res.status(404).json({ error: "Unit not found" });
+        const u = normaliseUnit(req.body, existing);
+        await dbRun("UPDATE inventory_units SET label = ?, location = ?, serialNo = ?, condition = ?, notes = ? WHERE id = ?",
+            [u.label, u.location, u.serialNo, u.condition, u.notes, existing.id]);
+        await syncUnitQuantity(existing.itemId);
+        res.json({ message: "Unit updated" });
+    } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// Only units added by mistake can be deleted; ones with history should be set to Disposed
+app.delete('/api/inventory/units/:unitId', async (req, res) => {
+    try {
+        const unit = await dbGet("SELECT * FROM inventory_units WHERE id = ?", [req.params.unitId]);
+        if (!unit) return res.status(404).json({ error: "Unit not found" });
+        const used = await dbGet("SELECT COUNT(*) AS n FROM inventory_services WHERE unitId = ?", [unit.id]);
+        if (used.n > 0) return res.status(409).json({ error: `${unit.label} has service or repair history. Set its condition to Disposed instead, to keep the history.` });
+        await dbRun("DELETE FROM inventory_units WHERE id = ?", [unit.id]);
+        await syncUnitQuantity(unit.itemId);
+        res.json({ message: "Unit deleted" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- Staff & Salary Payments ---
 
 const STAFF_PAYMENT_TYPES = ['advance', 'salary'];
@@ -1455,7 +2226,8 @@ const DEFAULT_REMINDER_SETTINGS = {
     },
     dueSoonDays: 3,
     bonus: { enabled: true },
-    checkouts: { enabled: true }
+    checkouts: { enabled: true },
+    services: { enabled: true }
 };
 
 const getSettingAsync = (key) => new Promise((resolve, reject) => getSetting(key, (err, value) => err ? reject(err) : resolve(value)));
@@ -1473,7 +2245,8 @@ const loadReminderSettings = async () => {
         bills,
         dueSoonDays: saved.dueSoonDays !== undefined ? saved.dueSoonDays : DEFAULT_REMINDER_SETTINGS.dueSoonDays,
         bonus: { ...DEFAULT_REMINDER_SETTINGS.bonus, ...(saved.bonus || {}) },
-        checkouts: { ...DEFAULT_REMINDER_SETTINGS.checkouts, ...(saved.checkouts || {}) }
+        checkouts: { ...DEFAULT_REMINDER_SETTINGS.checkouts, ...(saved.checkouts || {}) },
+        services: { ...DEFAULT_REMINDER_SETTINGS.services, ...(saved.services || {}) }
     };
 };
 
@@ -1615,6 +2388,30 @@ const buildNotifications = async () => {
         });
     }
 
+    // 5. Inventory items due for a service within a week (or overdue); cleared by logging a service
+    if (settings.services.enabled) {
+        const soon = addDaysIso(today, 7);
+        (await loadInventory())
+            .filter(i => i.nextServiceDue && i.nextServiceDue <= soon)
+            .forEach(i => {
+                const overdue = i.nextServiceDue < today;
+                // For items tracked per unit, name the units that are due
+                const dueUnits = (i.unitsDue || []).filter(u => u.nextServiceDue <= soon);
+                const unitText = dueUnits.length > 0 && dueUnits.length < i.unitCount
+                    ? `${dueUnits.map(u => `${u.label}${u.location ? ` (${u.location})` : ''}`).join(', ')} · `
+                    : '';
+                items.push({
+                    id: `service-${i.id}`,
+                    kind: 'service-due',
+                    severity: overdue ? 'overdue' : 'due',
+                    title: `${i.name}${i.quantity > 1 ? ` (x${i.quantity})` : ''} ${overdue ? 'service overdue' : 'service due'}`,
+                    detail: `${unitText}${!unitText && i.location ? `${i.location} · ` : ''}every ${i.serviceIntervalMonths} month(s)${i.lastServiceDate ? `, last done ${i.lastServiceDate}` : ''} — log the service once done.`,
+                    date: i.nextServiceDue,
+                    link: '/supplies/inventory'
+                });
+            });
+    }
+
     // Overdue first, then by date
     const rank = { overdue: 0, due: 1, info: 2 };
     items.sort((a, b) => (rank[a.severity] - rank[b.severity]) || String(a.date).localeCompare(String(b.date)));
@@ -1655,7 +2452,8 @@ app.put('/api/notifications/settings', async (req, res) => {
         }
         const bonus = { enabled: body.bonus && body.bonus.enabled !== undefined ? !!body.bonus.enabled : current.bonus.enabled };
         const checkouts = { enabled: body.checkouts && body.checkouts.enabled !== undefined ? !!body.checkouts.enabled : current.checkouts.enabled };
-        const next = { bills, dueSoonDays, bonus, checkouts };
+        const services = { enabled: body.services && body.services.enabled !== undefined ? !!body.services.enabled : current.services.enabled };
+        const next = { bills, dueSoonDays, bonus, checkouts, services };
         await setSettingAsync('reminderSettings', JSON.stringify(next));
         res.json({ message: "Reminder settings saved", data: next });
     } catch (err) {
@@ -1916,6 +2714,16 @@ const migrateLegacyBillPayments = async () => {
         console.error('Bill payment migration failed (will retry on next start):', err.message);
     }
 };
+
+// Upload errors (e.g. file too large) as JSON, so the app can show them
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err instanceof multer.MulterError) {
+        return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'The file is too large. Please use a smaller photo or PDF.' : err.message });
+    }
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Server error' });
+});
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);

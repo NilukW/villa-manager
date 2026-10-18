@@ -29,6 +29,13 @@ const run = (sql, params = []) => new Promise((resolve, reject) =>
         counts.testStaffPayments = await run("DELETE FROM staff_payments WHERE staffId IN (SELECT id FROM staff WHERE name LIKE '%(test)')");
         counts.testStaff = await run("DELETE FROM staff WHERE name LIKE '%(test)'");
 
+        // Test grocery purchases (their expenses are '[TEST]' and go with the expenses below)
+        const hasGroceries = await new Promise((resolve) => db.get("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'grocery_purchases'", [], (e, r) => resolve(!e && r.n > 0)));
+        if (hasGroceries) {
+            counts.groceryItems = await run("DELETE FROM grocery_purchase_items WHERE purchaseId IN (SELECT id FROM grocery_purchases WHERE shop LIKE '[TEST]%')");
+            counts.groceryPurchases = await run("DELETE FROM grocery_purchases WHERE shop LIKE '[TEST]%'");
+        }
+
         counts.bookings = await run("DELETE FROM reservations WHERE groupId LIKE 'test-%'");
         counts.expenses = await run("DELETE FROM expenses WHERE description LIKE '[TEST]%'");
 

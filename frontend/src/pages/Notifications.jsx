@@ -52,7 +52,8 @@ export default function Notifications() {
                 bills: Object.fromEntries(Object.entries(settings.bills).map(([t, c]) => [t, { enabled: c.enabled, day: Number(c.day) }])),
                 dueSoonDays: Number(settings.dueSoonDays),
                 bonus: settings.bonus,
-                checkouts: settings.checkouts
+                checkouts: settings.checkouts,
+                services: settings.services
             };
             const res = await fetchWithAuth('/api/notifications/settings', { method: 'PUT', body: JSON.stringify(payload) });
             const json = await readJson(res);
@@ -164,6 +165,15 @@ export default function Notifications() {
                                     onChange={e => setSettings(s => ({ ...s, checkouts: { ...s.checkouts, enabled: e.target.checked } }))}
                                 />
                                 <span>Remind me when a guest still owes a balance on or after their checkout day</span>
+                            </label>
+
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem', cursor: 'pointer' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={!!settings.services?.enabled}
+                                    onChange={e => setSettings(s => ({ ...s, services: { ...s.services, enabled: e.target.checked } }))}
+                                />
+                                <span>Remind me when an inventory item is due for a service (e.g. A/C servicing)</span>
                             </label>
 
                             <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1.25rem', cursor: 'pointer' }}>

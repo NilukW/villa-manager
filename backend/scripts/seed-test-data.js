@@ -70,9 +70,39 @@ const insertBooking = async ({ groupId, guest, phone, checkIn, checkOut, rooms, 
 (async () => {
     const history = await get("SELECT COUNT(*) AS n FROM reservations WHERE groupId LIKE 'test-aug-%' OR groupId LIKE 'test-sep-%'");
     const current = await get("SELECT COUNT(*) AS n FROM reservations WHERE groupId LIKE 'test-now-%'");
-    if (history.n > 0 && current.n > 0) {
+    const groceries = await get("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'grocery_purchases'").then(t =>
+        t.n ? get("SELECT COUNT(*) AS n FROM grocery_purchases WHERE shop LIKE '[TEST]%'") : { n: -1 });
+    if (history.n > 0 && current.n > 0 && groceries.n !== 0) {
         console.log('Test data is already present. Run remove-test-data.js first if you want to re-seed.');
         return db.close();
+    }
+
+    // Grocery purchases this month and last (needs the grocery tables, i.e. the server has run once)
+    if (groceries.n === 0) {
+        const items = await new Promise((resolve, reject) => db.all("SELECT id, name, groupKey, unit FROM grocery_items", [], (e, r) => e ? reject(e) : resolve(r)));
+        const byName = Object.fromEntries(items.map(i => [i.name, i]));
+        const purchases = [
+            // [day offset, shop, billNo, [[item, qty, unitPrice], ...]] — or a total-only purchase
+            [-35, '[TEST] Keells', 'K-1001', [['Eggs', 30, 50], ['Bread', 4, 180], ['Coffee', 1, 1450], ['Dishwash liquid', 2, 420]]],
+            [-6, '[TEST] Keells', 'K-1088', [['Eggs', 30, 55], ['Milk powder', 2, 1100], ['Soap', 6, 120], ['Toilet cleaner', 2, 650], ['Water bottles', 24, 90]]],
+            [-3, '[TEST] Local shop', '', null, 'kitchen', 950, 'Bread, bananas and coconut'],
+            [-1, '[TEST] Litro dealer', 'G-55', [['Gas refill', 1, 4200]]]
+        ];
+        for (const [offset, shop, billNo, lines, groupKey, total, notes] of purchases) {
+            const date = isoDay(offset);
+            const itemLines = (lines || []).map(([name, qty, price]) => ({ ...byName[name], quantity: qty, unitPrice: price, amount: qty * price }));
+            const sum = lines ? itemLines.reduce((s, l) => s + l.amount, 0) : total;
+            const groups = lines ? [...new Set(itemLines.map(l => l.groupKey))] : [groupKey];
+            const exp = await run("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Supplies', ?, ?)", [date, sum, `[TEST] Groceries & Supplies - ${shop}`]);
+            const p = await run("INSERT INTO grocery_purchases (date, shop, billNo, groupKey, notes, totalAmount, expenseId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [date, shop, billNo, groups.length === 1 ? groups[0] : 'mixed', notes || '', sum, exp.lastID]);
+            for (const l of itemLines) {
+                await run("INSERT INTO grocery_purchase_items (purchaseId, itemId, itemName, groupKey, unit, quantity, unitPrice, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [p.lastID, l.id, l.name, l.groupKey, l.unit, l.quantity, l.unitPrice, l.amount]);
+            }
+        }
+        console.log(`Added ${purchases.length} test grocery purchases.`);
+        if (history.n > 0 && current.n > 0) return db.close();
     }
 
     await run('BEGIN TRANSACTION');

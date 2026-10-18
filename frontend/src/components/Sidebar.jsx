@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, CalendarDays, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt, PlugZap, Zap, Droplets, Wifi, Hotel, ChevronDown, UserRound, UserCog, Wallet, Gift, X } from 'lucide-react';
+import { LayoutDashboard, CalendarDays, LogOut, Users as UsersIcon, PieChart, Link2, BarChart3, Shirt, PlugZap, Zap, Droplets, Wifi, Hotel, ChevronDown, UserRound, UserCog, Wallet, Gift, X, ShoppingBasket, Boxes, Package } from 'lucide-react';
 import { useContext, useState, useEffect } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import { usePendingBonuses } from '../utils/bonusReminders';
@@ -10,6 +10,11 @@ const UTILITY_LINKS = [
     { to: '/utilities/water', label: 'Water', icon: Droplets },
     { to: '/utilities/telecom', label: 'Telecom', icon: Wifi },
     { to: '/utilities/booking', label: 'Booking.com', icon: Hotel }
+];
+
+const SUPPLY_LINKS = [
+    { to: '/supplies/groceries', label: 'Groceries & Supplies', icon: ShoppingBasket },
+    { to: '/supplies/inventory', label: 'Inventory', icon: Boxes }
 ];
 
 const STAFF_LINKS = [
@@ -93,6 +98,7 @@ export default function Sidebar({ open = false, onClose }) {
                     </NavLink>
 
                     <NavGroup label="Utility Bills" icon={PlugZap} basePath="/utilities" links={UTILITY_LINKS} />
+                    <NavGroup label="Supplies & Inventory" icon={Package} basePath="/supplies" links={SUPPLY_LINKS} />
                     <NavGroup
                         label="Staff"
                         icon={UserRound}
