@@ -2,6 +2,16 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, Plus, Check } from 'lucide-react';
 
+// Move keyboard focus to the next field in the same form (like pressing Tab)
+export const focusNext = (el) => {
+    if (!el) return;
+    const scope = el.closest('form') || document;
+    const fields = [...scope.querySelectorAll('input, select, textarea, button, [tabindex]')]
+        .filter(e => !e.disabled && e.tabIndex >= 0 && e.type !== 'hidden' && e.offsetParent !== null);
+    const next = fields[fields.indexOf(el) + 1];
+    if (next) next.focus();
+};
+
 // Type-to-filter picker. Options: [{ value, label, hint?, group?, keywords? }].
 // groups: { key: { label, color } } for the small tag shown next to each option.
 // onCreate(text) adds an "+ Add ..." choice when the typed text matches nothing exactly.
@@ -68,12 +78,14 @@ export default function SearchSelect({
         };
     }, [open]);
 
+    // After a choice, go on to the next field (after React has drawn any fields the choice adds)
     const choose = (o) => {
         if (o.create) onCreate(o.label);
         else onSelect(o);
         setOpen(false);
         setQuery('');
-        if (!freeText) inputRef.current?.blur();
+        const input = inputRef.current;
+        setTimeout(() => focusNext(input), 0);
     };
 
     const onKeyDown = (e) => {
@@ -97,7 +109,14 @@ export default function SearchSelect({
                 setOpen(false);
             }
         } else if (e.key === 'Tab') {
-            setOpen(false);
+            // Typed something? Tab takes the highlighted choice, like Enter (not in free-text boxes,
+            // where what was typed is already the value)
+            if (!freeText && !e.shiftKey && open && q && results[active]) {
+                e.preventDefault();
+                choose(results[active]);
+            } else {
+                setOpen(false);
+            }
         }
     };
 
@@ -122,7 +141,7 @@ export default function SearchSelect({
                     setOpen(true);
                 }}
                 onKeyDown={onKeyDown}
-                style={{ paddingRight: '1.8rem', ...inputStyle }}
+                style={{ width: '100%', paddingRight: '1.8rem', ...inputStyle }}
             />
             <ChevronDown size={15} style={{ position: 'absolute', right: '0.55rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-light)', pointerEvents: 'none' }} />
             {open && pos && results.length > 0 && createPortal(

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { ShoppingBasket, Plus, ChevronLeft, ChevronRight, Pencil, Trash2, X, CheckCircle2, Receipt, ListChecks, Tags, TrendingUp, TrendingDown, EyeOff, Eye, Upload, FileText, Sparkles, AlertTriangle } from 'lucide-react';
 import { fetchWithAuth } from '../utils/api';
 import ProcessingOverlay, { ButtonSpinner } from '../components/ProcessingOverlay';
-import SearchSelect from '../components/SearchSelect';
+import SearchSelect, { focusNext } from '../components/SearchSelect';
 
 export const GROCERY_GROUPS = {
     kitchen: { label: 'Breakfast & Kitchen', color: '#f59e0b' },
@@ -85,7 +85,10 @@ function GroupBadge({ groupKey }) {
 }
 
 // itemId: catalogue id, 'new' (typed name, added to the item list on save) or 'custom' (old line without a catalogue item)
-const emptyLine = () => ({ itemId: '', itemName: '', groupKey: 'kitchen', unit: 'pcs', quantity: '1', unitPrice: '', addToCatalogue: false, billText: '' });
+const derivedStyle = { backgroundColor: '#f8fafc', color: 'var(--text-light)' };
+
+// priceFrom: which of unit price / total the user typed; the other one is calculated from it
+const emptyLine = () => ({ itemId: '', itemName: '', groupKey: 'kitchen', unit: 'pcs', quantity: '1', unitPrice: '', amount: '', priceFrom: 'unit', addToCatalogue: false, billText: '' });
 
 // Add / edit a purchase: itemised lines, or a single total for small no-bill buys
 function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
@@ -102,7 +105,11 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
     });
     const [lines, setLines] = useState(
         purchase && purchase.items.length > 0
-            ? purchase.items.map(l => ({ ...emptyLine(), itemId: l.itemId ? String(l.itemId) : 'custom', itemName: l.itemName, groupKey: l.groupKey || 'other', unit: l.unit || 'pcs', quantity: String(l.quantity), unitPrice: String(l.unitPrice) }))
+            ? purchase.items.map(l => ({
+                ...emptyLine(), itemId: l.itemId ? String(l.itemId) : 'custom', itemName: l.itemName, groupKey: l.groupKey || 'other', unit: l.unit || 'pcs',
+                quantity: String(l.quantity), unitPrice: String(l.unitPrice), amount: String(l.amount),
+                priceFrom: Math.abs(round2(l.quantity * l.unitPrice) - l.amount) > 0.01 ? 'total' : 'unit'
+            }))
             : [emptyLine()]
     );
     // Bill file: the one already saved with the purchase, and/or a new upload
@@ -111,6 +118,8 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
     const [readNote, setReadNote] = useState('');
     const [uploading, setUploading] = useState(false);
     const fileRef = useRef(null);
+    const linesRef = useRef(null);
+    const [focusLine, setFocusLine] = useState(null); // line whose item box should get focus once drawn
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
 
@@ -119,7 +128,28 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
         .filter(i => i.active || lines.some(l => String(l.itemId) === String(i.id)))
         .map(i => ({ value: String(i.id), label: i.name, hint: i.unit, group: i.groupKey })), [catalogue, lines]);
 
-    const lineAmount = (l) => round2(Number(l.quantity || 0) * Number(l.unitPrice || 0));
+    const lineAmount = (l) => round2(Number(l.amount || 0));
+
+    // Qty, unit price and total: typing unit price works out the total, typing the total works out the
+    // unit price, and changing qty keeps whichever price the user typed
+    const setNumber = (idx, field, value) => setLines(ls => ls.map((l, i) => {
+        if (i !== idx) return l;
+        const next = { ...l, [field]: value };
+        const qty = Number(field === 'quantity' ? value : l.quantity);
+        const calc = (n) => (qty > 0 && n !== '' ? String(n) : '');
+        if (field === 'unitPrice') {
+            next.priceFrom = 'unit';
+            next.amount = calc(value === '' ? '' : round2(qty * Number(value)));
+        } else if (field === 'amount') {
+            next.priceFrom = 'total';
+            next.unitPrice = calc(value === '' ? '' : round2(Number(value) / qty));
+        } else if (l.priceFrom === 'total' && l.amount !== '') {
+            next.unitPrice = calc(round2(Number(l.amount) / qty));
+        } else if (l.unitPrice !== '') {
+            next.amount = calc(round2(qty * Number(l.unitPrice)));
+        }
+        return next;
+    }));
     const itemsTotal = lines.reduce((s, l) => s + lineAmount(l), 0);
 
     const updateLine = (idx, patch) => setLines(ls => ls.map((l, i) => {
@@ -129,6 +159,27 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
         if (cat) Object.assign(next, { itemName: cat.name, groupKey: cat.groupKey, unit: cat.unit, addToCatalogue: false });
         return next;
     }));
+
+    // Add a line and put the cursor in its item box
+    const addLine = () => {
+        setLines(ls => [...ls, emptyLine()]);
+        setFocusLine(lines.length);
+    };
+    useEffect(() => {
+        if (focusLine === null) return;
+        linesRef.current?.querySelector(`[data-line="${focusLine}"] input[role="combobox"]`)?.focus();
+        setFocusLine(null);
+    }, [focusLine, lines.length]);
+
+    // Enter moves on instead of saving. After a price (unit or total) the line is done: Enter goes to the
+    // next line's item box, or starts a new line on the last one.
+    const onNumberKey = (idx, isPrice) => (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        if (!isPrice) focusNext(e.target);
+        else if (idx === lines.length - 1) addLine();
+        else linesRef.current?.querySelector(`[data-line="${idx + 1}"] input[role="combobox"]`)?.focus();
+    };
 
     // A typed name that isn't in the item list becomes a new item (saved to the list with the purchase)
     const createItem = (idx, text) => {
@@ -158,10 +209,10 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
             if (r.items.length > 0) {
                 const newLines = r.items.map(it => {
                     const cat = it.catalogueId ? catById[String(it.catalogueId)] : null;
-                    const unitPrice = String(round2(it.lineTotal / it.quantity));
+                    const prices = { quantity: String(it.quantity), unitPrice: String(round2(it.lineTotal / it.quantity)), amount: String(it.lineTotal), priceFrom: 'total' };
                     return cat
-                        ? { ...emptyLine(), itemId: String(cat.id), itemName: cat.name, groupKey: cat.groupKey, unit: cat.unit, quantity: String(it.quantity), unitPrice, billText: it.billText }
-                        : { ...emptyLine(), itemId: 'new', itemName: it.name, groupKey: it.groupKey, unit: it.unit, quantity: String(it.quantity), unitPrice, addToCatalogue: true, billText: it.billText };
+                        ? { ...emptyLine(), itemId: String(cat.id), itemName: cat.name, groupKey: cat.groupKey, unit: cat.unit, ...prices, billText: it.billText }
+                        : { ...emptyLine(), itemId: 'new', itemName: it.name, groupKey: it.groupKey, unit: it.unit, ...prices, addToCatalogue: true, billText: it.billText };
                 });
                 setLines(newLines);
                 setMode('items');
@@ -188,10 +239,12 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
             const filled = lines.filter(l => l.itemId);
             if (filled.length === 0) return setError('Add at least one item.');
             const missing = filled.find(l => !(lineAmount(l) > 0) || (!catById[l.itemId] && !l.itemName.trim()));
-            if (missing) return setError('Each item needs a name, quantity and price.');
+            if (missing) return setError('Each item needs a name, quantity and a unit price or total.');
+            // The total is sent as entered, so e.g. 3 for LKR 1,000 stays 1,000 (unit price 333.33)
+            const prices = (l) => ({ quantity: Number(l.quantity), unitPrice: Number(l.unitPrice), amount: lineAmount(l) });
             body.items = filled.map(l => catById[l.itemId]
-                ? { itemId: Number(l.itemId), quantity: Number(l.quantity), unitPrice: Number(l.unitPrice) }
-                : { itemName: l.itemName.trim(), groupKey: l.groupKey, unit: l.unit, quantity: Number(l.quantity), unitPrice: Number(l.unitPrice), addToCatalogue: l.addToCatalogue });
+                ? { itemId: Number(l.itemId), ...prices(l) }
+                : { itemName: l.itemName.trim(), groupKey: l.groupKey, unit: l.unit, ...prices(l), addToCatalogue: l.addToCatalogue });
         } else {
             if (!(Number(form.totalAmount) > 0)) return setError('Enter the total amount.');
             body.groupKey = form.groupKey;
@@ -295,13 +348,17 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
                     </div>
 
                     {mode === 'items' ? (
-                        <div>
+                        <div ref={linesRef}>
+                            <div className="hide-on-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 80px 110px 110px 32px', gap: '0.5rem', padding: '0 0.65rem 0.3rem', fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-light)', textTransform: 'uppercase' }}>
+                                <span>Item</span><span>Qty</span><span>Unit price</span><span>Total</span><span />
+                            </div>
                             {lines.map((l, idx) => {
                                 const cat = catById[l.itemId];
                                 const isNew = l.itemId && !cat;
                                 return (
-                                    <div key={idx} style={{ border: `1px solid ${isNew ? '#c7d2fe' : 'var(--border)'}`, borderRadius: '0.5rem', padding: '0.6rem', marginBottom: '0.5rem' }}>
-                                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 80px 110px 100px 32px', gap: '0.5rem', alignItems: 'center' }} className="stack-on-mobile">
+                                    <div key={idx} data-line={idx} style={{ border: `1px solid ${isNew ? '#c7d2fe' : 'var(--border)'}`, borderRadius: '0.5rem', padding: '0.6rem', marginBottom: '0.5rem' }}>
+                                        {/* Fields are in typing order (item, new-item details, qty, price); the grid draws the details on a second row */}
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 80px 110px 110px 32px', gap: '0.5rem', alignItems: 'center' }} className="stack-on-mobile">
                                             <SearchSelect
                                                 options={itemOptions}
                                                 groups={GROCERY_GROUPS}
@@ -313,39 +370,46 @@ function PurchaseModal({ purchase, catalogue, onClose, onSaved }) {
                                                 createLabel={text => `Add "${capitalise(text)}" as a new item`}
                                                 inputStyle={{ padding: '0.45rem 1.8rem 0.45rem 0.45rem' }}
                                             />
-                                            <input type="number" step="any" min="0" className="form-control" placeholder="Qty" value={l.quantity} onChange={e => updateLine(idx, { quantity: e.target.value })} style={{ padding: '0.45rem' }} />
-                                            <input type="number" step="any" min="0" className="form-control" placeholder="Unit price" value={l.unitPrice} onChange={e => updateLine(idx, { unitPrice: e.target.value })} style={{ padding: '0.45rem' }} />
-                                            <div style={{ fontWeight: 700, textAlign: 'right', fontSize: '0.9rem' }}>{lineAmount(l) > 0 ? lineAmount(l).toLocaleString() : '-'}</div>
-                                            <button type="button" onClick={() => setLines(ls => ls.length > 1 ? ls.filter((_, i) => i !== idx) : [emptyLine()])} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }} title="Remove line"><X size={16} /></button>
+                                            {isNew && (
+                                                <div style={{ gridColumn: '1 / -1', gridRow: 2 }}>
+                                                    <div style={{ display: 'grid', gridTemplateColumns: 'auto 2fr 1.3fr 0.9fr', gap: '0.5rem', alignItems: 'center' }} className="stack-on-mobile">
+                                                        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--primary)', backgroundColor: '#eef2ff', padding: '0.15rem 0.5rem', borderRadius: '1rem', textTransform: 'uppercase', justifySelf: 'start' }}>New</span>
+                                                        {/* Name was just typed in the item box, so Tab skips it; click to correct it */}
+                                                        <input type="text" tabIndex={-1} className="form-control" placeholder="Item name" value={l.itemName} onChange={e => updateLine(idx, { itemName: e.target.value })} style={{ padding: '0.4rem' }} />
+                                                        <select className="form-control" value={l.groupKey} onChange={e => updateLine(idx, { groupKey: e.target.value })} style={{ padding: '0.4rem' }} title="Group">
+                                                            {Object.entries(GROCERY_GROUPS).map(([k, g]) => <option key={k} value={k}>{g.label}</option>)}
+                                                        </select>
+                                                        <select className="form-control" value={l.unit} onChange={e => updateLine(idx, { unit: e.target.value })} style={{ padding: '0.4rem' }} title="Unit">
+                                                            {[...new Set([...UNITS, l.unit])].map(u => <option key={u} value={u}>{u}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.35rem', fontSize: '0.8rem', color: 'var(--text-light)' }}>
+                                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                                                            <input type="checkbox" tabIndex={-1} checked={l.addToCatalogue} onChange={e => updateLine(idx, { addToCatalogue: e.target.checked })} />
+                                                            Add to the item list for next time
+                                                        </label>
+                                                        {l.billText && <span title="As printed on the bill">Bill: {l.billText}</span>}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <input type="number" step="any" min="0" className="form-control" placeholder="Qty" aria-label="Quantity" value={l.quantity} onChange={e => setNumber(idx, 'quantity', e.target.value)} onFocus={e => e.target.select()} onKeyDown={onNumberKey(idx, false)} style={{ padding: '0.45rem' }} />
+                                            {/* Whichever of the two prices was worked out is shown in grey */}
+                                            <input type="number" step="any" min="0" className="form-control" placeholder="Unit price" aria-label="Unit price" value={l.unitPrice} onChange={e => setNumber(idx, 'unitPrice', e.target.value)} onFocus={e => e.target.select()} onKeyDown={onNumberKey(idx, true)}
+                                                title="Price for one. The total is worked out." style={{ padding: '0.45rem', ...(l.priceFrom === 'total' && l.unitPrice ? derivedStyle : {}) }} />
+                                            <input type="number" step="any" min="0" className="form-control" placeholder="Total" aria-label="Line total" value={l.amount} onChange={e => setNumber(idx, 'amount', e.target.value)} onFocus={e => e.target.select()} onKeyDown={onNumberKey(idx, true)}
+                                                title="Total for this line. The unit price is worked out." style={{ padding: '0.45rem', fontWeight: 700, ...(l.priceFrom === 'unit' && l.amount ? derivedStyle : {}) }} />
+                                            <button type="button" tabIndex={-1} onClick={() => setLines(ls => ls.length > 1 ? ls.filter((_, i) => i !== idx) : [emptyLine()])} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }} title="Remove line"><X size={16} /></button>
                                         </div>
-                                        {isNew && (
-                                            <div style={{ marginTop: '0.5rem' }}>
-                                                <div style={{ display: 'grid', gridTemplateColumns: 'auto 2fr 1.3fr 0.9fr', gap: '0.5rem', alignItems: 'center' }} className="stack-on-mobile">
-                                                    <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--primary)', backgroundColor: '#eef2ff', padding: '0.15rem 0.5rem', borderRadius: '1rem', textTransform: 'uppercase', justifySelf: 'start' }}>New</span>
-                                                    <input type="text" className="form-control" placeholder="Item name" value={l.itemName} onChange={e => updateLine(idx, { itemName: e.target.value })} style={{ padding: '0.4rem' }} />
-                                                    <select className="form-control" value={l.groupKey} onChange={e => updateLine(idx, { groupKey: e.target.value })} style={{ padding: '0.4rem' }} title="Group">
-                                                        {Object.entries(GROCERY_GROUPS).map(([k, g]) => <option key={k} value={k}>{g.label}</option>)}
-                                                    </select>
-                                                    <select className="form-control" value={l.unit} onChange={e => updateLine(idx, { unit: e.target.value })} style={{ padding: '0.4rem' }} title="Unit">
-                                                        {[...new Set([...UNITS, l.unit])].map(u => <option key={u} value={u}>{u}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.35rem', fontSize: '0.8rem', color: 'var(--text-light)' }}>
-                                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
-                                                        <input type="checkbox" checked={l.addToCatalogue} onChange={e => updateLine(idx, { addToCatalogue: e.target.checked })} />
-                                                        Add to the item list for next time
-                                                    </label>
-                                                    {l.billText && <span title="As printed on the bill">Bill: {l.billText}</span>}
-                                                </div>
-                                            </div>
-                                        )}
                                         {!isNew && l.billText && <div style={{ marginTop: '0.3rem', fontSize: '0.78rem', color: 'var(--text-light)' }}>Bill: {l.billText}</div>}
                                     </div>
                                 );
                             })}
-                            <button type="button" className="btn" onClick={() => setLines(ls => [...ls, emptyLine()])} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem', border: '1px dashed var(--border)', backgroundColor: 'white' }}>
-                                <Plus size={14} /> Add item
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                                <button type="button" className="btn" onClick={addLine} style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem', border: '1px dashed var(--border)', backgroundColor: 'white' }}>
+                                    <Plus size={14} /> Add item
+                                </button>
+                                <span className="hide-on-mobile" style={{ fontSize: '0.78rem', color: 'var(--text-light)' }}>Enter a unit price <i>or</i> a total; the other is worked out · Tab picks the highlighted item · Enter after a price goes to the next line</span>
+                            </div>
                         </div>
                     ) : (
                         <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
