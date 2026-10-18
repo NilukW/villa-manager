@@ -312,6 +312,9 @@ const db = new sqlite3.Database(dbPath, (err) => {
             notes TEXT,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
+        // When each unit was installed (its service schedule starts here until the first service) and its warranty
+        db.run("ALTER TABLE inventory_units ADD COLUMN installedDate TEXT", () => {});
+        db.run("ALTER TABLE inventory_units ADD COLUMN warrantyUntil TEXT", () => {});
 
         // Staff & salary payments
         db.run(`CREATE TABLE IF NOT EXISTS staff (

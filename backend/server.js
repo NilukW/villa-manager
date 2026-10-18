@@ -1383,7 +1383,8 @@ const loadInventory = async () => {
             const allUnitsLast = lastFor(i.id, null);
             const perUnit = liveUnits.map(u => {
                 const own = lastFor(i.id, u.id);
-                const last = [own, allUnitsLast].filter(Boolean).sort().pop() || null;
+                // Until its first service, a unit's schedule starts from when it was installed
+                const last = [own, allUnitsLast].filter(Boolean).sort().pop() || u.installedDate || null;
                 return { id: u.id, label: u.label, location: u.location, nextServiceDue: nextServiceDue(i, last) };
             }).filter(u => u.nextServiceDue);
             next = perUnit.map(u => u.nextServiceDue).sort()[0] || null;
@@ -1396,6 +1397,7 @@ const loadInventory = async () => {
             lastServiceDate: s.lastServiceDate || null,
             nextServiceDue: next,
             unitCount: liveUnits.length,
+            unitLocations: [...new Set(liveUnits.map(u => u.location).filter(Boolean))],
             unitsNeedingAttention: liveUnits.filter(u => ['needs_repair', 'broken'].includes(u.condition)).length,
             unitsDue
         };
@@ -1595,7 +1597,7 @@ app.post('/api/inventory/:id/services', async (req, res) => {
             let expenseId = null;
             if (cost > 0) {
                 const e = await dbRun("INSERT INTO expenses (date, category, amount, description) VALUES (?, 'Maintenance', ?, ?)",
-                    [date, cost, `${typeLabel} - ${item.name}${unit ? ` [${unit.label}${unit.location ? `, ${unit.location}` : ''}]` : ''}${what ? `: ${what}` : ''}${vendor ? ` (${vendor})` : ''}`]);
+                    [date, cost, `${typeLabel} - ${item.name}${unit ? ` [${unit.label}${unit.location && !unit.label.includes(unit.location) ? `, ${unit.location}` : ''}]` : ''}${what ? `: ${what}` : ''}${vendor ? ` (${vendor})` : ''}`]);
                 expenseId = e.lastID;
             }
             await dbRun("INSERT INTO inventory_services (itemId, unitId, date, type, part, description, vendor, cost, expenseId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1649,7 +1651,9 @@ const normaliseUnit = (body, existing = {}) => {
         location: String(pick('location') || '').trim(),
         serialNo: String(pick('serialNo') || '').trim(),
         condition: INVENTORY_CONDITIONS.includes(pick('condition')) ? pick('condition') : 'working',
-        notes: String(pick('notes') || '').trim()
+        notes: String(pick('notes') || '').trim(),
+        installedDate: pick('installedDate') || null,
+        warrantyUntil: pick('warrantyUntil') || null
     };
 };
 
@@ -1693,8 +1697,8 @@ app.post('/api/inventory/:id/units', async (req, res) => {
         const item = await dbGet("SELECT * FROM inventory_items WHERE id = ?", [req.params.id]);
         if (!item) return res.status(404).json({ error: "Item not found" });
         const u = normaliseUnit(req.body);
-        const r = await dbRun("INSERT INTO inventory_units (itemId, label, location, serialNo, condition, notes) VALUES (?, ?, ?, ?, ?, ?)",
-            [item.id, u.label, u.location, u.serialNo, u.condition, u.notes]);
+        const r = await dbRun("INSERT INTO inventory_units (itemId, label, location, serialNo, condition, notes, installedDate, warrantyUntil) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [item.id, u.label, u.location, u.serialNo, u.condition, u.notes, u.installedDate, u.warrantyUntil]);
         await syncUnitQuantity(item.id);
         res.json({ message: "Unit added", data: { id: r.lastID } });
     } catch (err) {
@@ -1715,8 +1719,8 @@ app.post('/api/inventory/:id/units/split', async (req, res) => {
         await dbRun('BEGIN TRANSACTION');
         try {
             for (let n = 1; n <= count; n++) {
-                await dbRun("INSERT INTO inventory_units (itemId, label, location, condition) VALUES (?, ?, ?, ?)",
-                    [item.id, count === 1 ? item.name : `${item.name} ${n}`, count === 1 ? (item.location || '') : '', condition]);
+                await dbRun("INSERT INTO inventory_units (itemId, label, location, condition, installedDate, warrantyUntil) VALUES (?, ?, ?, ?, ?, ?)",
+                    [item.id, count === 1 ? item.name : `${item.name} ${n}`, count === 1 ? (item.location || '') : '', condition, item.purchaseDate || null, item.warrantyUntil || null]);
             }
             await syncUnitQuantity(item.id);
             await dbRun('COMMIT');
@@ -1735,8 +1739,8 @@ app.put('/api/inventory/units/:unitId', async (req, res) => {
         const existing = await dbGet("SELECT * FROM inventory_units WHERE id = ?", [req.params.unitId]);
         if (!existing) return res.status(404).json({ error: "Unit not found" });
         const u = normaliseUnit(req.body, existing);
-        await dbRun("UPDATE inventory_units SET label = ?, location = ?, serialNo = ?, condition = ?, notes = ? WHERE id = ?",
-            [u.label, u.location, u.serialNo, u.condition, u.notes, existing.id]);
+        await dbRun("UPDATE inventory_units SET label = ?, location = ?, serialNo = ?, condition = ?, notes = ?, installedDate = ?, warrantyUntil = ? WHERE id = ?",
+            [u.label, u.location, u.serialNo, u.condition, u.notes, u.installedDate, u.warrantyUntil, existing.id]);
         await syncUnitQuantity(existing.itemId);
         res.json({ message: "Unit updated" });
     } catch (err) {
@@ -2398,7 +2402,7 @@ const buildNotifications = async () => {
                 // For items tracked per unit, name the units that are due
                 const dueUnits = (i.unitsDue || []).filter(u => u.nextServiceDue <= soon);
                 const unitText = dueUnits.length > 0 && dueUnits.length < i.unitCount
-                    ? `${dueUnits.map(u => `${u.label}${u.location ? ` (${u.location})` : ''}`).join(', ')} · `
+                    ? `${dueUnits.map(u => `${u.label}${u.location && !u.label.includes(u.location) ? ` (${u.location})` : ''}`).join(', ')} · `
                     : '';
                 items.push({
                     id: `service-${i.id}`,

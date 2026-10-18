@@ -20,6 +20,7 @@ const CONDITIONS = {
     disposed: { label: 'Disposed', bg: '#f1f5f9', fg: '#64748b' }
 };
 const SERVICE_TYPES = { service: 'Service', repair: 'Repair', part: 'Part replaced' };
+const COMMON_AREAS = ['Kitchen', 'Dining area', 'Lobby', 'Garden', 'Store room', 'Staff room'];
 
 // Suggestions for the item name: [name, category, service interval in months]
 const COMMON_ITEMS = [
@@ -60,6 +61,18 @@ const today = () => {
 };
 const lkr = (val) => `LKR ${Number(val || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// A unit's name with its room, unless the name already says it
+const unitName = (u) => `${u.label}${u.location && !u.label.includes(u.location) ? ` (${u.location})` : ''}`;
+
+// "8 months" / "2 yrs 3 months" since a date
+const ageText = (iso) => {
+    const [y, m] = iso.split('-').map(Number);
+    const now = new Date();
+    const months = (now.getFullYear() - y) * 12 + (now.getMonth() + 1 - m);
+    if (months < 1) return 'new';
+    const yrs = Math.floor(months / 12), rest = months % 12;
+    return [yrs && `${yrs} yr${yrs > 1 ? 's' : ''}`, rest && `${rest} month${rest > 1 ? 's' : ''}`].filter(Boolean).join(' ');
+};
 const shortDate = (iso) => iso ? `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}` : '';
 
 const readJson = async (res) => {
@@ -93,10 +106,12 @@ function ItemModal({ item, allItems, onClose, onSaved }) {
     const hasExpense = editing && !!item.expenseId;
     const unitsTracked = editing && item.unitCount > 0;
     const [recordExpense, setRecordExpense] = useState(!editing);
+    const [trackUnits, setTrackUnits] = useState(true); // new appliances: go on to set rooms per unit
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
     const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
     const cost = Number(form.purchaseCost || 0);
+    const offerUnits = !editing && form.category === 'appliance';
 
     // Name suggestions: what's already in the inventory, then common villa items
     const nameOptions = useMemo(() => {
@@ -126,7 +141,7 @@ function ItemModal({ item, allItems, onClose, onSaved }) {
             const json = await readJson(res);
             if (!res.ok) throw new Error(json.error || 'Failed to save item');
             notifyDataChanged();
-            onSaved();
+            onSaved(!editing && offerUnits && trackUnits ? json.data?.id : null);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -203,6 +218,13 @@ function ItemModal({ item, allItems, onClose, onSaved }) {
                     </div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-light)' }}>With a service interval you'll get a reminder in the bell when a service is due.</div>
 
+                    {offerUnits && (
+                        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', fontSize: '0.88rem', marginTop: '1rem', padding: '0.65rem 0.75rem', borderRadius: '0.5rem', backgroundColor: '#f5f7ff', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={trackUnits} onChange={e => setTrackUnits(e.target.checked)} style={{ marginTop: '0.2rem' }} />
+                            <span>Next, set the <b>room and installed date for each unit</b> <span style={{ color: 'var(--text-light)' }}>(e.g. each A/C or fridge), so repairs and replaced parts are tracked per room.</span></span>
+                        </label>
+                    )}
+
                     {error && <div style={{ marginTop: '0.9rem', padding: '0.6rem 0.75rem', backgroundColor: '#fee2e2', color: '#b91c1c', borderRadius: '0.5rem', fontSize: '0.85rem' }}>{error}</div>}
                 </div>
                 <div style={{ padding: '0.9rem 1.5rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', backgroundColor: '#f8fafc' }}>
@@ -217,8 +239,8 @@ function ItemModal({ item, allItems, onClose, onSaved }) {
 const emptyLog = () => ({ date: today(), type: 'service', unitId: '', part: '', description: '', vendor: '', cost: '', markWorking: true });
 
 // Service log and per-unit tracking for one item
-function ServiceModal({ item, rooms, onClose, onChanged }) {
-    const [tab, setTab] = useState(item.unitCount > 0 ? 'units' : 'log');
+function ServiceModal({ item, rooms, startOnUnits, onClose, onChanged }) {
+    const [tab, setTab] = useState(startOnUnits || item.unitCount > 0 ? 'units' : 'log');
     const [services, setServices] = useState([]);
     const [unitData, setUnitData] = useState({ units: [], allUnits: null, partNames: [] });
     const [loading, setLoading] = useState(true);
@@ -251,7 +273,19 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
     const selectedUnit = units.find(u => String(u.id) === String(form.unitId));
     const partOptions = useMemo(() => [...new Set([...unitData.partNames, ...partsFor(item.name)])].map(p => ({ value: p, label: p })), [unitData.partNames, item.name]);
     const partColumns = useMemo(() => [...new Set([...defaultPartColumns(item.name), ...unitData.partNames])], [item.name, unitData.partNames]);
-    const roomOptions = useMemo(() => [...new Set([...rooms, 'Kitchen', 'Dining area', 'Lobby', 'Garden', 'Store room'])], [rooms]);
+    // Room choice for a unit. Picking a room also names the unit after it (e.g. "Air conditioner - Standard 1")
+    // while the name is still the default one.
+    const knownPlaces = [...rooms, ...COMMON_AREAS];
+    const defaultLabel = (label) => !label || new RegExp(`^${item.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\d+| - .*)?$`).test(label);
+    const pickRoom = (value) => setEditUnit(u => value === '__other'
+        ? { ...u, otherRoom: true, location: knownPlaces.includes(u.location) ? '' : u.location }
+        : { ...u, otherRoom: false, location: value, label: value && defaultLabel(u.label) ? `${item.name} - ${value}` : u.label });
+    const roomTaken = (room) => {
+        const others = units.filter(x => x.location === room && x.condition !== 'disposed' && x.id !== editUnit?.id);
+        return others.length ? others.map(x => x.label.replace(` - ${room}`, '')).join(', ') : '';
+    };
+    const openUnit = (u) => setEditUnit({ ...u, otherRoom: !!u.location && !knownPlaces.includes(u.location) });
+    const newUnit = () => openUnit({ new: true, label: `${item.name} ${units.length + 1}`, location: '', serialNo: '', condition: 'working', notes: '', installedDate: '', warrantyUntil: '' });
 
     const add = async (e) => {
         e.preventDefault();
@@ -295,6 +329,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
     };
 
     const saveUnit = async (u) => {
+        if (!(u.location || '').trim()) return alert('Choose the room for this unit.');
         if (!u.label.trim()) return alert('Give the unit a name.');
         setBusy('Saving...');
         try {
@@ -332,10 +367,16 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
         return (
             <tr key={u.id} style={{ borderBottom: '1px solid var(--border)', opacity: u.condition === 'disposed' ? 0.55 : 1 }}>
                 <td style={{ padding: '0.55rem 0.7rem', position: 'sticky', left: 0, backgroundColor: 'white' }}>
-                    <div style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{u.label}</div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-light)', whiteSpace: 'nowrap' }}>{u.location || 'No room set'}{u.serialNo ? ` · ${u.serialNo}` : ''}</div>
+                    <div style={{ fontWeight: 600, whiteSpace: 'nowrap', color: u.location ? 'var(--text)' : '#b45309' }}>{u.location || 'No room set'}</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-light)', whiteSpace: 'nowrap' }}>{u.label}{u.serialNo ? ` · ${u.serialNo}` : ''}</div>
                 </td>
                 <td style={{ padding: '0.55rem 0.7rem' }}><Pill bg={cond.bg} fg={cond.fg}>{cond.label}</Pill></td>
+                <td style={{ padding: '0.55rem 0.7rem', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>
+                    {u.installedDate ? <>{shortDate(u.installedDate)}<div style={{ color: 'var(--text-light)' }}>{ageText(u.installedDate)}</div></> : <span style={{ color: 'var(--text-light)' }}>-</span>}
+                    {u.warrantyUntil && (u.warrantyUntil >= today()
+                        ? <div style={{ color: 'var(--success)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}><ShieldCheck size={12} /> to {shortDate(u.warrantyUntil)}</div>
+                        : <div style={{ color: 'var(--text-light)' }}>warranty ended</div>)}
+                </td>
                 <td style={{ padding: '0.55rem 0.7rem', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{u.lastServiceDate ? shortDate(u.lastServiceDate) : <span style={{ color: 'var(--text-light)' }}>-</span>}</td>
                 {partColumns.map(p => {
                     const r = u.parts[p];
@@ -352,7 +393,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                 })}
                 <td style={{ padding: '0.55rem 0.7rem', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{u.repairCount > 0 ? `${u.repairCount} · ${lkr(u.spent)}` : <span style={{ color: 'var(--text-light)' }}>-</span>}</td>
                 <td style={{ padding: '0.55rem 0.7rem', textAlign: 'right' }}>
-                    <button type="button" className="btn" onClick={() => setEditUnit({ ...u })} style={{ padding: '0.3rem', border: '1px solid var(--border)', backgroundColor: 'white' }} title="Edit unit"><Pencil size={13} /></button>
+                    <button type="button" className="btn" onClick={() => openUnit(u)} style={{ padding: '0.3rem', border: '1px solid var(--border)', backgroundColor: 'white' }} title="Edit unit"><Pencil size={13} /></button>
                 </td>
             </tr>
         );
@@ -393,7 +434,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                                 </p>
                                 <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                                     {item.quantity > 0 && <button type="button" className="btn btn-primary" onClick={split}><Layers size={16} /> Create {item.quantity} unit{item.quantity > 1 ? 's' : ''}</button>}
-                                    <button type="button" className="btn" onClick={() => setEditUnit({ new: true, label: `${item.name} 1`, location: '', serialNo: '', condition: 'working', notes: '' })} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}><Plus size={16} /> Add one unit</button>
+                                    <button type="button" className="btn" onClick={newUnit} style={{ border: '1px solid var(--border)', backgroundColor: 'white' }}><Plus size={16} /> Add units one by one</button>
                                 </div>
                             </div>
                         ) : (
@@ -402,14 +443,15 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                                     <span style={{ fontSize: '0.85rem', color: 'var(--text-light)' }}>
                                         Blue = replaced (latest date), grey = original part. Click a cell to log a replacement.
                                     </span>
-                                    <button type="button" className="btn" onClick={() => setEditUnit({ new: true, label: `${item.name} ${units.length + 1}`, location: '', serialNo: '', condition: 'working', notes: '' })} style={{ padding: '0.35rem 0.7rem', fontSize: '0.82rem', border: '1px solid var(--border)', backgroundColor: 'white' }}><Plus size={14} /> Add unit</button>
+                                    <button type="button" className="btn" onClick={newUnit} style={{ padding: '0.35rem 0.7rem', fontSize: '0.82rem', border: '1px solid var(--border)', backgroundColor: 'white' }}><Plus size={14} /> Add unit</button>
                                 </div>
                                 <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: '0.5rem' }}>
                                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem' }}>
                                         <thead>
                                             <tr style={{ backgroundColor: '#f8fafc', color: 'var(--text-light)', fontSize: '0.75rem', textTransform: 'uppercase', textAlign: 'left' }}>
-                                                <th style={{ padding: '0.55rem 0.7rem', position: 'sticky', left: 0, backgroundColor: '#f8fafc' }}>Unit / room</th>
+                                                <th style={{ padding: '0.55rem 0.7rem', position: 'sticky', left: 0, backgroundColor: '#f8fafc' }}>Room / unit</th>
                                                 <th style={{ padding: '0.55rem 0.7rem' }}>Condition</th>
+                                                <th style={{ padding: '0.55rem 0.7rem' }}>Installed</th>
                                                 <th style={{ padding: '0.55rem 0.7rem', whiteSpace: 'nowrap' }}>Last service</th>
                                                 {partColumns.map(p => <th key={p} style={{ padding: '0.55rem 0.5rem', whiteSpace: 'nowrap' }}>{p}</th>)}
                                                 <th style={{ padding: '0.55rem 0.7rem', whiteSpace: 'nowrap' }}>Repairs · spent</th>
@@ -439,7 +481,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                                     {liveUnits.length > 0 && (
                                         <select className="form-control" value={form.unitId} onChange={e => setForm({ ...form, unitId: e.target.value })} title="Which unit">
                                             <option value="">All units / whole item</option>
-                                            {units.filter(u => u.condition !== 'disposed' || String(u.id) === String(form.unitId)).map(u => <option key={u.id} value={u.id}>{u.label}{u.location ? ` (${u.location})` : ''}</option>)}
+                                            {units.filter(u => u.condition !== 'disposed' || String(u.id) === String(form.unitId)).map(u => <option key={u.id} value={u.id}>{unitName(u)}</option>)}
                                         </select>
                                     )}
                                     <input type="number" step="any" min="0" className="form-control" placeholder="Cost (LKR)" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} />
@@ -481,7 +523,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                                         <div key={s.id} style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', padding: '0.6rem 0.85rem', borderBottom: '1px solid var(--border)', fontSize: '0.9rem', flexWrap: 'wrap' }}>
                                             <span style={{ whiteSpace: 'nowrap', color: 'var(--text-light)' }}>{s.date}</span>
                                             <Pill bg="#eef2ff" fg="var(--primary)">{SERVICE_TYPES[s.type]}{s.part ? `: ${s.part}` : ''}</Pill>
-                                            {liveUnits.length > 0 || s.unitLabel ? <Pill bg="#f1f5f9" fg="#334155">{s.unitLabel ? `${s.unitLabel}${s.unitLocation ? ` · ${s.unitLocation}` : ''}` : 'All units'}</Pill> : null}
+                                            {liveUnits.length > 0 || s.unitLabel ? <Pill bg="#f1f5f9" fg="#334155">{s.unitLabel ? unitName({ label: s.unitLabel, location: s.unitLocation }) : 'All units'}</Pill> : null}
                                             <span style={{ flex: 1, minWidth: '120px' }}>{s.description || (s.part ? '' : '-')}{s.vendor ? <span style={{ color: 'var(--text-light)' }}>{s.description ? ' · ' : ''}{s.vendor}</span> : ''}</span>
                                             <b style={{ whiteSpace: 'nowrap' }}>{s.cost ? lkr(s.cost) : '—'}</b>
                                             <button onClick={() => remove(s)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer' }} title="Delete record"><Trash2 size={15} /></button>
@@ -498,10 +540,20 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                 <div className="modal-backdrop" style={{ ...modalBackdrop, zIndex: 1100 }}>
                     <form onSubmit={e => { e.preventDefault(); saveUnit(editUnit); }} className="card animate-slide-up" style={{ width: '100%', maxWidth: '440px' }}>
                         <h3 style={{ margin: '0 0 1rem 0' }}>{editUnit.id ? `Edit ${editUnit.label}` : 'Add unit'}</h3>
-                        <div className="form-group"><label className="form-label">Name *</label><input className="form-control" value={editUnit.label} onChange={e => setEditUnit({ ...editUnit, label: e.target.value })} autoFocus /></div>
                         <div className="form-group">
-                            <label className="form-label">Room / location</label>
-                            <SearchSelect freeText text={editUnit.location || ''} onTextChange={v => setEditUnit(u => ({ ...u, location: v }))} options={roomOptions.map(r => ({ value: r, label: r }))} onSelect={o => setEditUnit(u => ({ ...u, location: o.label }))} placeholder="e.g. Standard 1" />
+                            <label className="form-label">Room *</label>
+                            <select className="form-control" value={editUnit.otherRoom ? '__other' : (editUnit.location || '')} onChange={e => pickRoom(e.target.value)} autoFocus>
+                                <option value="">Choose the room…</option>
+                                <optgroup label="Rooms">{rooms.map(r => <option key={r} value={r}>{r}{roomTaken(r) ? ` (has ${roomTaken(r)})` : ''}</option>)}</optgroup>
+                                <optgroup label="Other places">{COMMON_AREAS.map(r => <option key={r} value={r}>{r}</option>)}</optgroup>
+                                <option value="__other">Other (type it)…</option>
+                            </select>
+                            {editUnit.otherRoom && <input className="form-control" style={{ marginTop: '0.4rem' }} placeholder="e.g. Upstairs corridor" value={editUnit.location || ''} onChange={e => setEditUnit({ ...editUnit, location: e.target.value })} autoFocus />}
+                        </div>
+                        <div className="form-group"><label className="form-label">Name *</label><input className="form-control" value={editUnit.label} onChange={e => setEditUnit({ ...editUnit, label: e.target.value })} /></div>
+                        <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                            <div className="form-group"><label className="form-label">Installed on</label><input type="date" className="form-control" value={editUnit.installedDate || ''} onChange={e => setEditUnit({ ...editUnit, installedDate: e.target.value })} /></div>
+                            <div className="form-group"><label className="form-label">Warranty until</label><input type="date" className="form-control" value={editUnit.warrantyUntil || ''} onChange={e => setEditUnit({ ...editUnit, warrantyUntil: e.target.value })} /></div>
                         </div>
                         <div className="stack-on-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                             <div className="form-group"><label className="form-label">Condition</label>
@@ -509,6 +561,7 @@ function ServiceModal({ item, rooms, onClose, onChanged }) {
                             </div>
                             <div className="form-group"><label className="form-label">Serial / model no.</label><input className="form-control" value={editUnit.serialNo || ''} onChange={e => setEditUnit({ ...editUnit, serialNo: e.target.value })} /></div>
                         </div>
+                        {item.serviceIntervalMonths && <div style={{ fontSize: '0.8rem', color: 'var(--text-light)', marginBottom: '0.75rem' }}>Its first service is due {item.serviceIntervalMonths} month(s) after the installed date.</div>}
                         <div className="form-group"><label className="form-label">Notes</label><input className="form-control" value={editUnit.notes || ''} onChange={e => setEditUnit({ ...editUnit, notes: e.target.value })} /></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.6rem' }}>
                             <div>{editUnit.id && <button type="button" className="btn" onClick={() => deleteUnit(editUnit)} style={{ border: 'none', backgroundColor: '#fee2e2', color: '#b91c1c' }}><Trash2 size={15} /> Delete</button>}</div>
@@ -548,7 +601,7 @@ export default function Inventory() {
     };
     useEffect(() => {
         load();
-        fetchWithAuth('/api/rooms').then(readJson).then(j => setRooms((j.data || []).map(r => r.name))).catch(() => {});
+        fetchWithAuth('/api/rooms').then(readJson).then(j => setRooms((j.data || []).map(r => r.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })))).catch(() => {});
     }, []);
 
     const t = today();
@@ -687,7 +740,9 @@ export default function Inventory() {
                                                 <b>{i.quantity}</b>
                                                 {i.unitCount > 0 && <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}><Layers size={12} /> tracked per unit</div>}
                                             </td>
-                                            <td data-label="Location" style={{ padding: '0.8rem 1rem' }}>{i.unitCount > 0 ? <span style={{ color: 'var(--text-light)' }}>Per unit</span> : (i.location || '-')}</td>
+                                            <td data-label="Location" style={{ padding: '0.8rem 1rem' }}>{i.unitCount > 0
+    ? (i.unitLocations?.length ? <span style={{ fontSize: '0.85rem' }}>{i.unitLocations.join(', ')}</span> : <span style={{ color: '#b45309', fontSize: '0.85rem' }}>Rooms not set</span>)
+    : (i.location || '-')}</td>
                                             <td data-label="Condition" style={{ padding: '0.8rem 1rem' }}>
                                                 <Pill bg={cond.bg} fg={cond.fg}>{cond.label}</Pill>
                                                 {i.unitsNeedingAttention > 0 && <div style={{ marginTop: '0.25rem' }}><Pill bg="#fef3c7" fg="#b45309">{i.unitsNeedingAttention} unit(s) need repair</Pill></div>}
@@ -705,7 +760,7 @@ export default function Inventory() {
                                                 {i.nextServiceDue
                                                     ? <span style={{ color: serviceOverdue ? '#b91c1c' : 'var(--text)', fontWeight: serviceOverdue ? 700 : 400 }}>{serviceOverdue ? 'Due ' : ''}{i.nextServiceDue}</span>
                                                     : <span style={{ color: 'var(--text-light)' }}>{i.serviceIntervalMonths ? 'Set purchase date' : '-'}</span>}
-                                                {i.unitCount > 0 && i.unitsDue?.length > 0 && i.nextServiceDue && <div style={{ color: 'var(--text-light)' }}>{i.unitsDue.filter(u => u.nextServiceDue === i.nextServiceDue).map(u => u.label).join(', ')}</div>}
+                                                {i.unitCount > 0 && i.unitsDue?.length > 0 && i.nextServiceDue && <div style={{ color: 'var(--text-light)' }}>{i.unitsDue.filter(u => u.nextServiceDue === i.nextServiceDue).map(u => u.location || u.label).join(', ')}</div>}
                                                 {i.serviceCount > 0 && <div style={{ color: 'var(--text-light)' }}>{i.serviceCount} logged · {lkr(i.serviceCost)}</div>}
                                             </td>
                                             <td className="cell-actions" style={{ padding: '0.8rem 1rem', textAlign: 'right' }}>
@@ -724,9 +779,13 @@ export default function Inventory() {
                 </div>
             )}
 
-            {editing && <ItemModal item={editing.id ? editing : null} allItems={items} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load(); }} />}
+            {editing && <ItemModal item={editing.id ? editing : null} allItems={items} onClose={() => setEditing(null)} onSaved={async (unitsForId) => {
+                setEditing(null);
+                await load();
+                if (unitsForId) setServicing({ id: unitsForId, openUnits: true });
+            }} />}
             {/* Look the item up again so the header reflects the reloaded next-service date */}
-            {servicing && <ServiceModal item={items.find(x => x.id === servicing.id) || servicing} rooms={rooms} onClose={() => setServicing(null)} onChanged={load} />}
+            {servicing && items.some(x => x.id === servicing.id) && <ServiceModal item={items.find(x => x.id === servicing.id)} rooms={rooms} startOnUnits={!!servicing.openUnits} onClose={() => setServicing(null)} onChanged={load} />}
         </div>
     );
 }
